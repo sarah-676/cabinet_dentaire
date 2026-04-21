@@ -1,241 +1,251 @@
 /**
- * src/pages/dentiste/DashboardDentiste.jsx
- * ─────────────────────────────────────────
- * Tableau de bord du dentiste :
- *  - Statistiques patients (total, actifs, en attente, nouveaux ce mois)
- *  - Statistiques RDV (aujourd'hui, cette semaine)
- *  - Patients en attente de validation (avec boutons Accepter/Refuser)
- *  - RDV du jour
+ * pages/dentiste/DashboardDentiste.jsx
+ * ======================================
+ * Tableau de bord dentiste — connecté au backend.
+ *
+ * Données chargées :
+ *   GET /api/patients/stats/
+ *   GET /api/rendezvous/stats/
+ *   GET /api/rendezvous/?aujourd_hui=true&statut=ACCEPTE
+ *   GET /api/patients/?statut=PENDING       → patients à valider
+ *   GET /api/rendezvous/?statut=PENDING     → RDV à valider
+ *
+ * Actions disponibles :
+ *   Accepter / Refuser patient  → PATCH /api/patients/{id}/valider/
+ *   Accepter / Refuser RDV      → PATCH /api/rendezvous/{id}/valider/
  */
 
-import { useEffect, useState, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
-import { getPatientStats, validerPatient, getPatients } from "../../api/patientsAPI";
-import { getRendezVousStats, getRendezVous } from "../../api/rendezvousAPI";
-import { useNotifications } from "../../context/NotificationContext";
+import React, { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../../context/AuthContext'
+import { useDashboard } from '../../hooks/useDashboard'
+import { validerRDV, STATUT_RDV, TYPE_SOIN_LABELS } from '../../api/rendezvousAPI'
+import { validerPatient } from '../../api/patientsAPI'
+import { Check, X, Users, Calendar, ClipboardList, CheckCircle } from 'lucide-react'
 
-// ── Composant carte stat ──────────────────────────────────────────────────────
-
-function StatCard({ label, value, color = "#0f4c81", bg = "#e8f4fd" }) {
-  return (
-    <div style={{ ...styles.statCard, background: bg }}>
-      <div style={{ ...styles.statValue, color }}>{value ?? "—"}</div>
-      <div style={styles.statLabel}>{label}</div>
-    </div>
-  );
+function formatHeure(iso) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
+function formatDateCourte(iso) {
+  if (!iso) return ''
+  return new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+}
 
 export default function DashboardDentiste() {
-  const navigate               = useNavigate();
-  const { fetchStats: fetchNotifStats } = useNotifications();
+  const { user }    = useAuth()
+  const navigate    = useNavigate()
+  const { data, loading, error, reload } = useDashboard()
 
-  const [patientStats, setPatientStats] = useState(null);
-  const [rdvStats,     setRdvStats]     = useState(null);
-  const [pending,      setPending]      = useState([]);
-  const [rdvAujourd,   setRdvAujourd]   = useState([]);
-  const [loading,      setLoading]      = useState(true);
-  const [validating,   setValidating]   = useState({});
+  const [busy, setBusy] = useState({})
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // ── Valider patient ───────────────────────────────────────────────
+  async function handleValiderPatient(id, decision) {
+    setBusy(b => ({ ...b, [`p-${id}`]: true }))
     try {
-      const [ps, rs, pendingData, rdvData] = await Promise.all([
-        getPatientStats(),
-        getRendezVousStats(),
-        getPatients({ statut: "PENDING" }),
-        getRendezVous({ today: true }),
-      ]);
-      setPatientStats(ps);
-      setRdvStats(rs);
-      setPending(pendingData.results || pendingData);
-      setRdvAujourd(rdvData.results || rdvData);
+      await validerPatient(id, decision, '')
+      reload()
     } catch (err) {
-      console.error("Dashboard load error:", err);
+      alert(err?.response?.data?.detail || 'Erreur')
     } finally {
-      setLoading(false);
+      setBusy(b => ({ ...b, [`p-${id}`]: false }))
     }
-  }, []);
+  }
 
-  useEffect(() => { load(); }, [load]);
-
-  // ── Valider un patient ────────────────────────────────────────────
-
-  const handleValider = async (id, decision) => {
-    setValidating((v) => ({ ...v, [id]: true }));
+  // ── Valider RDV ───────────────────────────────────────────────────
+  async function handleValiderRDV(id, decision) {
+    setBusy(b => ({ ...b, [`r-${id}`]: true }))
     try {
-      await validerPatient(id, decision);
-      await load();
-      await fetchNotifStats();
+      await validerRDV(id, decision, '')
+      reload()
     } catch (err) {
-      alert(err.response?.data?.detail || "Erreur lors de la validation");
+      alert(err?.response?.data?.detail || 'Erreur')
     } finally {
-      setValidating((v) => ({ ...v, [id]: false }));
+      setBusy(b => ({ ...b, [`r-${id}`]: false }))
     }
-  };
+  }
 
-  if (loading) return <div style={styles.loading}>Chargement...</div>;
+  if (loading) {
+    return (
+      <div className="loading-center">
+        <div className="spinner" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="alert alert-error" style={{ margin: 0 }}>
+        {error}
+        <button className="btn btn-secondary btn-sm" onClick={reload} style={{ marginLeft: 12 }}>
+          Réessayer
+        </button>
+      </div>
+    )
+  }
+
+  const { patientStats, rdvStats, rdvAujourdhui, pendingPatients, pendingRdvs, totalDemandes } = data || {}
 
   return (
-    <div style={styles.page}>
-
-      {/* ── Stats patients ── */}
-      <section style={styles.section}>
-        <h3 style={styles.sectionTitle}>Mes patients</h3>
-        <div style={styles.statsGrid}>
-          <StatCard label="Total"          value={patientStats?.total}            color="#0f4c81" bg="#e8f4fd" />
-          <StatCard label="Actifs"         value={patientStats?.actifs}           color="#059669" bg="#ecfdf5" />
-          <StatCard label="En attente"     value={patientStats?.en_attente}       color="#d97706" bg="#fffbeb" />
-          <StatCard label="Nouveaux / mois"value={patientStats?.nouveaux_ce_mois} color="#7c3aed" bg="#f5f3ff" />
-          <StatCard label="Avec alertes"   value={patientStats?.avec_alertes}     color="#dc2626" bg="#fef2f2" />
-          <StatCard label="Mineurs"        value={patientStats?.mineurs}          color="#0891b2" bg="#ecfeff" />
+    <div>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Bonjour, {user?.full_name} 👋</h1>
+          <p className="page-sub">Voici un résumé de votre journée</p>
         </div>
-      </section>
+      </div>
 
-      {/* ── Stats RDV ── */}
-      {rdvStats && (
-        <section style={styles.section}>
-          <h3 style={styles.sectionTitle}>Rendez-vous</h3>
-          <div style={styles.statsGrid}>
-            <StatCard label="Aujourd'hui"     value={rdvStats.aujourd_hui}  color="#0f4c81" bg="#e8f4fd" />
-            <StatCard label="Cette semaine"   value={rdvStats.cette_semaine} color="#059669" bg="#ecfdf5" />
-            <StatCard label="En attente val." value={rdvStats.en_attente}   color="#d97706" bg="#fffbeb" />
-            <StatCard label="Total"           value={rdvStats.total}         color="#6b7280" bg="#f9fafb" />
+      {/* Statistiques */}
+      <div className="stats-grid">
+        <div className="card stat-card" style={{ cursor:'pointer' }} onClick={() => navigate('/dentiste/patients')}>
+          <div>
+            <div className="stat-label">Mes patients</div>
+            <div className="stat-value">{patientStats?.actifs ?? '—'}</div>
           </div>
-        </section>
-      )}
+          <div className="stat-icon teal"><Users size={22} /></div>
+        </div>
+        <div className="card stat-card" style={{ cursor:'pointer' }} onClick={() => navigate('/dentiste/agenda')}>
+          <div>
+            <div className="stat-label">RDV aujourd'hui</div>
+            <div className="stat-value">{rdvStats?.aujourd_hui ?? '—'}</div>
+          </div>
+          <div className="stat-icon blue"><Calendar size={22} /></div>
+        </div>
+        <div className="card stat-card" style={{ cursor:'pointer' }} onClick={() => navigate('/dentiste/agenda')}>
+          <div>
+            <div className="stat-label">Demandes en attente</div>
+            <div className="stat-value">{totalDemandes ?? '—'}</div>
+          </div>
+          <div className="stat-icon amber"><ClipboardList size={22} /></div>
+        </div>
+        <div className="card stat-card">
+          <div>
+            <div className="stat-label">Terminés ce mois</div>
+            <div className="stat-value">{rdvStats?.termines ?? '—'}</div>
+          </div>
+          <div className="stat-icon green"><CheckCircle size={22} /></div>
+        </div>
+      </div>
 
-      {/* ── Patients en attente de validation ── */}
-      {pending.length > 0 && (
-        <section style={styles.section}>
-          <h3 style={styles.sectionTitle}>
-            Patients en attente de validation
-            <span style={styles.badge}>{pending.length}</span>
-          </h3>
-          <div style={styles.pendingList}>
-            {pending.map((p) => (
-              <div key={p.id} style={styles.pendingCard}>
-                <div style={styles.pendingInfo}>
-                  <strong>{p.nom_complet}</strong>
-                  <span style={styles.pendingMeta}>
-                    {p.age} ans · {p.telephone}
-                  </span>
-                </div>
-                <div style={styles.pendingActions}>
-                  <button
-                    onClick={() => handleValider(p.id, "ACCEPTE")}
-                    disabled={validating[p.id]}
-                    style={styles.acceptBtn}
-                  >
-                    {validating[p.id] ? "..." : "✓ Accepter"}
-                  </button>
-                  <button
-                    onClick={() => handleValider(p.id, "REFUSE")}
-                    disabled={validating[p.id]}
-                    style={styles.refuseBtn}
-                  >
-                    {validating[p.id] ? "..." : "✗ Refuser"}
-                  </button>
-                  <button
-                    onClick={() => navigate(`/dentiste/patients/${p.id}`)}
-                    style={styles.viewBtn}
-                  >
-                    Voir
-                  </button>
-                </div>
+      <div className="grid-2">
+        {/* RDV du jour */}
+        <div className="card">
+          <div className="card-header">
+            <h3 style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <Calendar size={15} color="#00838f" /> RDV d'aujourd'hui
+            </h3>
+            <button className="btn btn-outline btn-sm" onClick={() => navigate('/dentiste/agenda')}>
+              Voir tout
+            </button>
+          </div>
+          <div className="card-pad">
+            {rdvAujourdhui?.length === 0 ? (
+              <p style={{ color: '#9ca3af', fontSize: 13 }}>
+                Aucun rendez-vous aujourd'hui.
+              </p>
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                {rdvAujourdhui?.map(r => (
+                  <div key={r.id} style={{
+                    display:'flex', alignItems:'center', gap:12,
+                    padding:'12px 14px', borderRadius:10,
+                    border:'1px solid #e5e7eb', background:'#fff',
+                  }}>
+                    <div style={{ minWidth:48, textAlign:'center' }}>
+                      <div style={{ fontSize:16, fontWeight:700, color:'#0097a7' }}>
+                        {formatHeure(r.date_heure)}
+                      </div>
+                      <div style={{ fontSize:11, color:'#9ca3af' }}>{r.duree_minutes}min</div>
+                    </div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontWeight:600, fontSize:13 }}>{r.patient_nom}</div>
+                      <div style={{ fontSize:12, color:'#6b7280' }}>
+                        {TYPE_SOIN_LABELS[r.type_soin] || r.type_soin}
+                      </div>
+                    </div>
+                    <span className="badge badge-success">Confirmé</span>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
-        </section>
-      )}
+        </div>
 
-      {/* ── RDV du jour ── */}
-      <section style={styles.section}>
-        <h3 style={styles.sectionTitle}>Rendez-vous du jour</h3>
-        {rdvAujourd.length === 0 ? (
-          <p style={styles.empty}>Aucun rendez-vous aujourd'hui.</p>
-        ) : (
-          <div style={styles.rdvList}>
-            {rdvAujourd.map((rdv) => (
-              <div key={rdv.id} style={styles.rdvCard}>
-                <div style={styles.rdvHour}>{rdv.heure || "—"}</div>
-                <div>
-                  <strong>{rdv.patient_nom}</strong>
-                  <div style={styles.rdvMeta}>{rdv.motif || "Consultation"}</div>
-                </div>
-                <span style={{
-                  ...styles.rdvStatus,
-                  background: rdv.statut === "CONFIRME" ? "#ecfdf5" : "#fffbeb",
-                  color:      rdv.statut === "CONFIRME" ? "#059669" : "#d97706",
-                }}>
-                  {rdv.statut}
-                </span>
-              </div>
-            ))}
+        {/* Demandes en attente */}
+        <div className="card">
+          <div className="card-header">
+            <h3 style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <ClipboardList size={15} color="#d97706" /> Demandes en attente
+            </h3>
+            {totalDemandes > 0 && (
+              <span className="badge badge-warning">{totalDemandes}</span>
+            )}
           </div>
-        )}
-      </section>
+          <div className="card-pad" style={{ display:'flex', flexDirection:'column', gap:10 }}>
+            {/* Patients PENDING */}
+            {pendingPatients?.map(p => (
+              <DemandeItem
+                key={`p-${p.id}`}
+                type="Patient"
+                name={p.nom_complet || `${p.prenom} ${p.nom}`}
+                detail={`Nouveau patient · ${p.telephone}`}
+                color="amber"
+                loading={busy[`p-${p.id}`]}
+                onAccept={() => handleValiderPatient(p.id, 'ACCEPTE')}
+                onRefuse={() => handleValiderPatient(p.id, 'REFUSE')}
+              />
+            ))}
 
+            {/* RDV PENDING */}
+            {pendingRdvs?.map(r => (
+              <DemandeItem
+                key={`r-${r.id}`}
+                type="RDV"
+                name={r.patient_nom}
+                detail={`${formatDateCourte(r.date_heure)} à ${formatHeure(r.date_heure)} · ${TYPE_SOIN_LABELS[r.type_soin] || r.type_soin}`}
+                color="blue"
+                loading={busy[`r-${r.id}`]}
+                onAccept={() => handleValiderRDV(r.id, 'ACCEPTE')}
+                onRefuse={() => handleValiderRDV(r.id, 'REFUSE')}
+              />
+            ))}
+
+            {totalDemandes === 0 && (
+              <p style={{ color: '#9ca3af', fontSize: 13 }}>
+                Aucune demande en attente. ✓
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
-  );
+  )
 }
 
-const styles = {
-  page: { display: "flex", flexDirection: "column", gap: "2rem" },
-  loading: { padding: "2rem", color: "#6b7280" },
-  section: {},
-  sectionTitle: {
-    fontSize: "1rem", fontWeight: 600, color: "#111827",
-    marginBottom: "1rem", display: "flex", alignItems: "center", gap: "0.5rem",
-  },
-  statsGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
-    gap: "1rem",
-  },
-  statCard: {
-    borderRadius: "12px", padding: "1.25rem 1rem", textAlign: "center",
-  },
-  statValue: { fontSize: "1.75rem", fontWeight: 700, marginBottom: "0.25rem" },
-  statLabel: { fontSize: "0.8rem", color: "#6b7280", fontWeight: 500 },
-  badge: {
-    background: "#fef3c7", color: "#92400e",
-    borderRadius: "12px", padding: "2px 8px", fontSize: "0.8rem", fontWeight: 600,
-  },
-  pendingList: { display: "flex", flexDirection: "column", gap: "0.75rem" },
-  pendingCard: {
-    background: "#ffffff", border: "1px solid #fed7aa",
-    borderRadius: "10px", padding: "1rem 1.25rem",
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    gap: "1rem", flexWrap: "wrap",
-  },
-  pendingInfo: { display: "flex", flexDirection: "column", gap: "2px" },
-  pendingMeta: { fontSize: "0.8rem", color: "#6b7280" },
-  pendingActions: { display: "flex", gap: "0.5rem", flexWrap: "wrap" },
-  acceptBtn: {
-    padding: "0.4rem 0.9rem", background: "#059669", color: "#fff",
-    border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "0.85rem",
-  },
-  refuseBtn: {
-    padding: "0.4rem 0.9rem", background: "#dc2626", color: "#fff",
-    border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "0.85rem",
-  },
-  viewBtn: {
-    padding: "0.4rem 0.9rem", background: "#f3f4f6", color: "#374151",
-    border: "1px solid #d1d5db", borderRadius: "6px", cursor: "pointer", fontSize: "0.85rem",
-  },
-  rdvList: { display: "flex", flexDirection: "column", gap: "0.6rem" },
-  rdvCard: {
-    background: "#ffffff", border: "1px solid #e5e7eb",
-    borderRadius: "10px", padding: "0.875rem 1.25rem",
-    display: "flex", alignItems: "center", gap: "1rem",
-  },
-  rdvHour: { fontSize: "0.85rem", fontWeight: 700, color: "#0f4c81", minWidth: "48px" },
-  rdvMeta: { fontSize: "0.8rem", color: "#6b7280", marginTop: "2px" },
-  rdvStatus: {
-    marginLeft: "auto", padding: "3px 10px",
-    borderRadius: "12px", fontSize: "0.75rem", fontWeight: 600,
-  },
-  empty: { color: "#6b7280", fontSize: "0.9rem" },
-};
+// ── Sous-composant carte de demande ───────────────────────────────────────────
+function DemandeItem({ type, name, detail, color, loading, onAccept, onRefuse }) {
+  const colors = {
+    amber: { bg: '#fffbeb', border: '#fde68a', badge: 'badge-warning' },
+    blue:  { bg: '#eff6ff', border: '#bfdbfe', badge: 'badge-info' },
+  }
+  const c = colors[color] || colors.amber
+
+  return (
+    <div style={{ padding:12, background:c.bg, borderRadius:10, border:`1px solid ${c.border}` }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
+        <div style={{ fontWeight:600, fontSize:13 }}>{name}</div>
+        <span className={`badge ${c.badge}`}>{type}</span>
+      </div>
+      <div style={{ fontSize:12, color:'#6b7280', marginBottom:8 }}>{detail}</div>
+      <div style={{ display:'flex', gap:6 }}>
+        <button className="btn btn-success btn-sm" onClick={onAccept} disabled={loading}>
+          {loading ? <span className="spinner" style={{ width:12, height:12 }} /> : <><Check size={12} /> Accepter</>}
+        </button>
+        <button className="btn btn-danger btn-sm" onClick={onRefuse} disabled={loading}>
+          <X size={12} /> Refuser
+        </button>
+      </div>
+    </div>
+  )
+}

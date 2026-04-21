@@ -1,31 +1,43 @@
 /**
- * src/api/axios.js
- * ─────────────────
- * Instance Axios unique pour tout le frontend.
+ * api/axios.js
+ * ==============
+ * Instance Axios configurée pour le cabinet dentaire.
  *
- * - Injecte automatiquement le Bearer token sur chaque requête
- * - Si 401 → tente un refresh automatique une seule fois
- * - Si refresh échoue → logout + redirect /login
+ * Architecture :
+ *   Frontend → Gateway (8080) → auth_service (8001) ou api_service (8000)
+ *   Le frontend ne contacte JAMAIS directement les services — toujours via gateway.
+ *
+ * Interceptors :
+ *   Request  → injecte Authorization: Bearer <access_token>
+ *   Response → sur 401, tente de rafraîchir le token via /api/auth/token/refresh/
+ *              Si refresh échoue → clearSession + redirect /login
  */
 
 import axios from "axios";
-import { getToken, getRefreshToken, setToken, clearTokens } from "../utils/token";
-
-const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8080";
+import {
+  getAccessToken,
+  getRefreshToken,
+  setAccessToken,
+  setRefreshToken,
+  clearSession,
+} from "@/utils/token";
 
 // ── Instance principale ───────────────────────────────────────────────────────
 
-const api = axios.create({
-  baseURL: BASE_URL,
-  headers: { "Content-Type": "application/json" },
-  timeout: 15000,
+const apiClient = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080",
+  timeout: 15_000,
+  headers: {
+    "Content-Type": "application/json",
+    Accept:         "application/json",
+  },
 });
 
-// ── Request interceptor : injecter le token ───────────────────────────────────
+// ── Interceptor Request : injection du token ──────────────────────────────────
 
-api.interceptors.request.use(
+apiClient.interceptors.request.use(
   (config) => {
-    const token = getToken();
+    const token = getAccessToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -34,71 +46,116 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// ── Response interceptor : gestion 401 + refresh ─────────────────────────────
+// ── Refresh en cours (évite les doubles appels simultanés) ────────────────────
 
-let isRefreshing = false;
-let failedQueue  = [];
+let _isRefreshing      = false;
+let _pendingQueue      = [];   // [{resolve, reject}]
 
-const processQueue = (error, token = null) => {
-  failedQueue.forEach((prom) => {
-    if (error) prom.reject(error);
-    else prom.resolve(token);
+const _processQueue = (error, token = null) => {
+  _pendingQueue.forEach(({ resolve, reject }) => {
+    error ? reject(error) : resolve(token);
   });
-  failedQueue = [];
+  _pendingQueue = [];
 };
 
-api.interceptors.response.use(
+// ── Interceptor Response : gestion 401 + auto-refresh ────────────────────────
+
+apiClient.interceptors.response.use(
+  // Réponse OK → on laisse passer
   (response) => response,
+
+  // Erreur → on traite
   async (error) => {
     const originalRequest = error.config;
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      if (isRefreshing) {
-        // Mettre en file d'attente pendant le refresh
-        return new Promise((resolve, reject) => {
-          failedQueue.push({ resolve, reject });
-        })
-          .then((token) => {
-            originalRequest.headers.Authorization = `Bearer ${token}`;
-            return api(originalRequest);
-          })
-          .catch((err) => Promise.reject(err));
-      }
+    // Seulement les 401 non-retentés, et pas l'endpoint refresh lui-même
+    const is401     = error.response?.status === 401;
+    const isRetry   = originalRequest._retry === true;
+    const isRefresh = originalRequest.url?.includes("/api/auth/token/refresh/");
+    const isLogin   = originalRequest.url?.includes("/api/auth/login/");
 
-      originalRequest._retry = true;
-      isRefreshing = true;
-
-      const refresh = getRefreshToken();
-      if (!refresh) {
-        _logout();
-        return Promise.reject(error);
-      }
-
-      try {
-        const { data } = await axios.post(`${BASE_URL}/api/auth/token/refresh/`, {
-          refresh,
-        });
-        setToken(data.access);
-        api.defaults.headers.common.Authorization = `Bearer ${data.access}`;
-        processQueue(null, data.access);
-        originalRequest.headers.Authorization = `Bearer ${data.access}`;
-        return api(originalRequest);
-      } catch (refreshError) {
-        processQueue(refreshError, null);
-        _logout();
-        return Promise.reject(refreshError);
-      } finally {
-        isRefreshing = false;
-      }
+    if (!is401 || isRetry || isRefresh || isLogin) {
+      return Promise.reject(error);
     }
 
-    return Promise.reject(error);
+    // Si un refresh est déjà en cours → mettre en file d'attente
+    if (_isRefreshing) {
+      return new Promise((resolve, reject) => {
+        _pendingQueue.push({ resolve, reject });
+      }).then((token) => {
+        originalRequest.headers.Authorization = `Bearer ${token}`;
+        return apiClient(originalRequest);
+      });
+    }
+
+    // Lancer le refresh
+    originalRequest._retry = true;
+    _isRefreshing          = true;
+
+    const refreshToken = getRefreshToken();
+
+    if (!refreshToken) {
+      _isRefreshing = false;
+      _logout();
+      return Promise.reject(error);
+    }
+
+    try {
+      // POST /api/auth/token/refresh/ → { access, refresh }
+      const { data } = await axios.post(
+        `${import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080"}/api/auth/token/refresh/`,
+        { refresh: refreshToken },
+        { headers: { "Content-Type": "application/json" } }
+      );
+
+      const newAccess  = data.access;
+      const newRefresh = data.refresh ?? refreshToken;
+
+      setAccessToken(newAccess);
+      setRefreshToken(newRefresh);
+
+      // Relancer toutes les requêtes en attente
+      _processQueue(null, newAccess);
+
+      // Relancer la requête originale avec le nouveau token
+      originalRequest.headers.Authorization = `Bearer ${newAccess}`;
+      return apiClient(originalRequest);
+
+    } catch (refreshError) {
+      _processQueue(refreshError, null);
+      _logout();
+      return Promise.reject(refreshError);
+
+    } finally {
+      _isRefreshing = false;
+    }
   }
 );
 
+// ── Helpers internes ──────────────────────────────────────────────────────────
+
 function _logout() {
-  clearTokens();
-  window.location.href = "/login";
+  clearSession();
+  // Redirection vers login sans recharger tout React
+  if (window.location.pathname !== "/login") {
+    window.location.replace("/login");
+  }
 }
 
-export default api;
+// ── Export ────────────────────────────────────────────────────────────────────
+
+export default apiClient;
+
+/**
+ * Helper pour les requêtes multipart/form-data (upload fichiers).
+ * Utilisé dans radiosAPI.js pour l'upload d'images radiographiques.
+ *
+ * @param {string} url
+ * @param {FormData} formData
+ * @param {Function} [onUploadProgress]
+ */
+export const uploadFile = (url, formData, onUploadProgress) =>
+  apiClient.post(url, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    onUploadProgress,
+  });

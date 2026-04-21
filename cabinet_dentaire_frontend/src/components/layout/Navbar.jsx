@@ -1,93 +1,200 @@
 /**
- * src/components/layout/Navbar.jsx
- * ──────────────────────────────────
- * Barre navigation + bouton cloche + panneau notifications.
- *
- * Connexion backend :
- *   GET /api/notifications/stats/  → badge (via NotificationContext)
- *   WS  ws://.../ws/notifications/ → incrémente badge temps réel
+ * components/layout/Navbar.jsx
+ * ==============================
+ * Barre de navigation supérieure.
+ * - Titre de la page courante (auto depuis le chemin)
+ * - NotificationBell avec badge
+ * - Avatar + nom utilisateur
+ * - Lien rapide vers Mon compte
  */
 
-import { useState } from "react";
-import { useLocation } from "react-router-dom";
-import { useNotifications } from "../../context/NotificationContext";
-import NotificationPanel from "../notifications/NotificationPanel";
+import { useLocation, useNavigate } from "react-router-dom";
+import { useState, useRef, useEffect } from "react";
+import { useAuth } from "../../context/AuthContext";
+import NotificationBell from "../notifications/NotificationBell";
+import { ROLES } from "../../utils/roles";
 
+// ─── Titres de page selon le chemin ───────────────────────────────────────
 const PAGE_TITLES = {
-  "/dentiste/dashboard":       "Tableau de bord",
-  "/dentiste/patients":        "Mes patients",
-  "/dentiste/agenda":          "Mon agenda",
-  "/dentiste/compte":          "Mon compte",
-  "/receptionniste/dashboard": "Tableau de bord",
-  "/receptionniste/patients":  "Patients",
-  "/receptionniste/agenda":    "Agenda",
-  "/receptionniste/compte":    "Mon compte",
-  "/admin/dashboard":          "Tableau de bord",
-  "/admin/utilisateurs":       "Gestion des utilisateurs",
-  "/admin/compte":             "Mon compte",
+  "/admin/dashboard":              "Tableau de bord",
+  "/admin/utilisateurs":           "Gestion des utilisateurs",
+  "/admin/compte":                 "Mon compte",
+  "/dentiste/dashboard":           "Tableau de bord",
+  "/dentiste/patients":            "Mes patients",
+  "/dentiste/agenda":              "Mon agenda",
+  "/dentiste/compte":              "Mon compte",
+  "/receptionniste/dashboard":     "Tableau de bord",
+  "/receptionniste/patients":      "Patients",
+  "/receptionniste/agenda":        "Agenda",
+  "/receptionniste/compte":        "Mon compte",
 };
+
+const COMPTE_PATH = {
+  [ROLES.ADMIN]:          "/admin/compte",
+  [ROLES.DENTISTE]:       "/dentiste/compte",
+  [ROLES.RECEPTIONNISTE]: "/receptionniste/compte",
+};
+
+// ===========================================================================
 
 export default function Navbar() {
-  const { pathname }            = useLocation();
-  const { nonLues }             = useNotifications();
-  const [showPanel, setShowPanel] = useState(false);
+  const { user, role, logout } = useAuth();
+  const location                = useLocation();
+  const navigate                = useNavigate();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef                 = useRef(null);
 
-  const title = PAGE_TITLES[pathname]
-    || (pathname.includes("/patients/") ? "Fiche patient" : "Cabinet Dentaire");
+  const pageTitle = PAGE_TITLES[location.pathname] || "Cabinet Dentaire";
+
+  // Fermer menu si clic extérieur
+  useEffect(() => {
+    const handler = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const handleLogout = async () => {
+    await logout();
+    navigate("/login");
+  };
 
   return (
-    <>
-      <header style={styles.bar}>
-        <h2 style={styles.title}>{title}</h2>
+    <header style={{
+      height: "60px",
+      background: "#fff",
+      borderBottom: "1px solid #e5e7eb",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      padding: "0 24px",
+      position: "sticky",
+      top: 0,
+      zIndex: 100,
+    }}>
+      {/* ── Titre de la page ── */}
+      <h2 style={{
+        fontSize: "16px",
+        fontWeight: 600,
+        color: "#111827",
+        margin: 0,
+      }}>
+        {pageTitle}
+      </h2>
 
-        <div style={styles.actions}>
+      {/* ── Actions droite ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        {/* Cloche notifications (CAS 1 + CAS 2) */}
+        <NotificationBell />
+
+        {/* ── Menu profil ── */}
+        <div style={{ position: "relative" }} ref={menuRef}>
           <button
-            style={styles.bellBtn}
-            onClick={() => setShowPanel(true)}
-            title={`${nonLues} notification(s) non lue(s)`}
+            onClick={() => setMenuOpen((v) => !v)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              background: "none",
+              border: "1px solid #e5e7eb",
+              borderRadius: "20px",
+              padding: "5px 12px 5px 6px",
+              cursor: "pointer",
+              transition: "background 0.15s",
+            }}
           >
-            <BellIcon />
-            {nonLues > 0 && (
-              <span style={styles.badge}>{nonLues > 99 ? "99+" : nonLues}</span>
-            )}
+            {/* Avatar */}
+            <div style={{
+              width: "28px",
+              height: "28px",
+              borderRadius: "50%",
+              background: "#2563eb",
+              color: "#fff",
+              fontSize: "11px",
+              fontWeight: 700,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}>
+              {user?.first_name?.[0]?.toUpperCase() || "?"}
+            </div>
+            <span style={{ fontSize: "13px", fontWeight: 500, color: "#374151" }}>
+              {user?.first_name || "Utilisateur"}
+            </span>
+            <span style={{ fontSize: "10px", color: "#9ca3af" }}>▾</span>
           </button>
+
+          {/* Dropdown menu */}
+          {menuOpen && (
+            <div style={{
+              position: "absolute",
+              right: 0,
+              top: "calc(100% + 8px)",
+              width: "200px",
+              background: "#fff",
+              borderRadius: "10px",
+              boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
+              border: "1px solid #e5e7eb",
+              overflow: "hidden",
+              zIndex: 200,
+            }}>
+              {/* Info utilisateur */}
+              <div style={{
+                padding: "12px 14px",
+                borderBottom: "1px solid #f3f4f6",
+                background: "#f9fafb",
+              }}>
+                <div style={{ fontSize: "13px", fontWeight: 600, color: "#111827" }}>
+                  {user?.first_name} {user?.last_name}
+                </div>
+                <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "2px" }}>
+                  {user?.email}
+                </div>
+              </div>
+
+              {/* Mon compte */}
+              <button
+                onClick={() => { navigate(COMPTE_PATH[role]); setMenuOpen(false); }}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  padding: "10px 14px",
+                  background: "none",
+                  border: "none",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  color: "#374151",
+                }}
+              >
+                ⚙ Mon compte
+              </button>
+
+              {/* Déconnexion */}
+              <button
+                onClick={handleLogout}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  padding: "10px 14px",
+                  background: "none",
+                  border: "none",
+                  borderTop: "1px solid #f3f4f6",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  color: "#dc2626",
+                }}
+              >
+                ⟵ Déconnexion
+              </button>
+            </div>
+          )}
         </div>
-      </header>
-
-      {showPanel && <NotificationPanel onClose={() => setShowPanel(false)} />}
-    </>
+      </div>
+    </header>
   );
 }
-
-function BellIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-      <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-    </svg>
-  );
-}
-
-const styles = {
-  bar: {
-    height: "60px", background: "#fff", borderBottom: "1px solid #e5e7eb",
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    padding: "0 2rem", flexShrink: 0, position: "sticky", top: 0, zIndex: 100,
-  },
-  title:   { fontSize: "1.1rem", fontWeight: 600, color: "#111827", margin: 0 },
-  actions: { display: "flex", alignItems: "center", gap: "0.75rem" },
-  bellBtn: {
-    position: "relative", background: "none",
-    border: "1.5px solid #e5e7eb", borderRadius: "8px",
-    width: "40px", height: "40px",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    cursor: "pointer", color: "#374151",
-  },
-  badge: {
-    position: "absolute", top: "-6px", right: "-6px",
-    background: "#dc2626", color: "#fff", borderRadius: "10px",
-    padding: "1px 5px", fontSize: "10px", fontWeight: 700,
-    minWidth: "16px", textAlign: "center", border: "2px solid #fff",
-  },
-};

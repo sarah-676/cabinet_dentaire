@@ -1,141 +1,110 @@
 /**
- * src/api/authAPI.js
- * ───────────────────
- * Appels vers auth_service via le gateway.
- * Base : /api/auth/
+ * api/authAPI.js
+ * ================
+ * Couche HTTP — endpoints auth_service.
+ *
+ * Tous les appels passent par le gateway (8080) → auth_service (8001).
+ *
+ * Endpoints utilisés (auth_app/urls.py) :
+ *   POST  /api/auth/login/                   → LoginView
+ *   POST  /api/auth/logout/                  → LogoutView
+ *   POST  /api/auth/token/refresh/           → TokenRefreshView
+ *   GET   /api/auth/verify/                  → VerifyTokenView
+ *   GET   /api/auth/profile/                 → ProfileView
+ *   PATCH /api/auth/profile/                 → ProfileView
+ *   POST  /api/auth/profile/change-password/ → ChangePasswordView
  */
 
-import api from "./axios";
+import apiClient from "./axios";
 
-const AUTH = "/api/auth";
+// ── Préfixe ───────────────────────────────────────────────────────────────────
+const BASE = "/api/auth";
 
-// ── Authentification ──────────────────────────────────────────────────────────
+// ── Auth ──────────────────────────────────────────────────────────────────────
 
 /**
  * POST /api/auth/login/
- * Retourne { access, refresh, user: { id, email, full_name, role } }
+ *
+ * Réponse (CustomTokenObtainPairSerializer.validate) :
+ * {
+ *   access:  "jwt...",
+ *   refresh: "jwt...",
+ *   user: {
+ *     id, email, first_name, last_name, full_name,
+ *     phone, role, specialite, numero_ordre,
+ *     avatar, is_active, date_joined, updated_at
+ *   }
+ * }
+ *
+ * @param {string} email
+ * @param {string} password
  */
-export const login = async (email, password) => {
-  const { data } = await api.post(`${AUTH}/login/`, { email, password });
-  return data;
-};
+export const login = (email, password) =>
+  apiClient.post(`${BASE}/login/`, { email, password });
 
 /**
  * POST /api/auth/logout/
- * Blackliste le refresh token.
+ * Blackliste le refresh token → invalide la session côté serveur.
+ *
+ * @param {string} refreshToken
  */
-export const logout = async (refreshToken) => {
-  await api.post(`${AUTH}/logout/`, { refresh: refreshToken });
-};
+export const logout = (refreshToken) =>
+  apiClient.post(`${BASE}/logout/`, { refresh: refreshToken });
 
 /**
  * POST /api/auth/token/refresh/
- * Renouvelle le access token. Utilisé par l'interceptor axios.
+ * Utilisé par l'interceptor axios.js — rarement appelé manuellement.
+ *
+ * @param {string} refreshToken
  */
-export const refreshToken = async (refresh) => {
-  const { data } = await api.post(`${AUTH}/token/refresh/`, { refresh });
-  return data.access;
-};
+export const refreshToken = (refreshToken) =>
+  apiClient.post(`${BASE}/token/refresh/`, { refresh: refreshToken });
 
 /**
  * GET /api/auth/verify/
- * Vérifie le token et retourne { valid, user }.
+ * Vérifie que le token est valide et retourne les infos user.
+ * Utilisé au démarrage de l'app pour restaurer la session.
+ *
+ * Réponse : { valid: true, user: { id, email, full_name, role, is_active } }
  */
-export const verifyToken = async () => {
-  const { data } = await api.get(`${AUTH}/verify/`);
-  return data;
-};
+export const verifyToken = () =>
+  apiClient.get(`${BASE}/verify/`);
 
 // ── Profil ────────────────────────────────────────────────────────────────────
 
 /**
  * GET /api/auth/profile/
+ * Retourne UserProfileSerializer : id, email, full_name, role, etc.
  */
-export const getProfile = async () => {
-  const { data } = await api.get(`${AUTH}/profile/`);
-  return data;
-};
+export const getProfile = () =>
+  apiClient.get(`${BASE}/profile/`);
 
 /**
  * PATCH /api/auth/profile/
+ * Champs modifiables (UserUpdateSelfSerializer) :
+ *   first_name, last_name, phone, specialite, numero_ordre, avatar
+ *
+ * @param {Object} data
  */
-export const updateProfile = async (payload) => {
-  const { data } = await api.patch(`${AUTH}/profile/`, payload);
-  return data;
-};
+export const updateProfile = (data) =>
+  apiClient.patch(`${BASE}/profile/`, data);
+
+/**
+ * PATCH /api/auth/profile/ — avec avatar (multipart/form-data)
+ *
+ * @param {FormData} formData
+ */
+export const updateProfileWithAvatar = (formData) =>
+  apiClient.patch(`${BASE}/profile/`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
 
 /**
  * POST /api/auth/profile/change-password/
+ * Body (ChangePasswordSerializer) :
+ *   { current_password, new_password, new_password_confirm }
+ *
+ * @param {Object} data
  */
-export const changePassword = async (payload) => {
-  const { data } = await api.post(`${AUTH}/profile/change-password/`, payload);
-  return data;
-};
-
-// ── Gestion utilisateurs (Admin) ──────────────────────────────────────────────
-
-/**
- * GET /api/auth/users/                 → liste (avec filtres)
- * params : { role, is_active, search }
- */
-export const getUsers = async (params = {}) => {
-  const { data } = await api.get(`${AUTH}/users/`, { params });
-  return data;
-};
-
-/**
- * GET /api/auth/users/dentistes/       → liste dentistes actifs
- * Utilisé par la réceptionniste pour sélectionner un dentiste.
- */
-export const getDentistes = async () => {
-  const { data } = await api.get(`${AUTH}/users/dentistes/`);
-  return data;
-};
-
-/**
- * GET /api/auth/users/receptionnistes/ → liste réceptionnistes actifs
- */
-export const getReceptionnistes = async () => {
-  const { data } = await api.get(`${AUTH}/users/receptionnistes/`);
-  return data;
-};
-
-/**
- * GET /api/auth/users/stats/
- */
-export const getUserStats = async () => {
-  const { data } = await api.get(`${AUTH}/users/stats/`);
-  return data;
-};
-
-/**
- * POST /api/auth/users/               → créer un utilisateur [Admin]
- */
-export const createUser = async (payload) => {
-  const { data } = await api.post(`${AUTH}/users/`, payload);
-  return data;
-};
-
-/**
- * PATCH /api/auth/users/{id}/
- */
-export const updateUser = async (id, payload) => {
-  const { data } = await api.patch(`${AUTH}/users/${id}/`, payload);
-  return data;
-};
-
-/**
- * DELETE /api/auth/users/{id}/         → désactivation soft
- */
-export const deleteUser = async (id) => {
-  const { data } = await api.delete(`${AUTH}/users/${id}/`);
-  return data;
-};
-
-/**
- * PATCH /api/auth/users/{id}/toggle-actif/
- */
-export const toggleUserActif = async (id) => {
-  const { data } = await api.patch(`${AUTH}/users/${id}/toggle-actif/`);
-  return data;
-};
+export const changePassword = (data) =>
+  apiClient.post(`${BASE}/profile/change-password/`, data);
