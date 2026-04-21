@@ -201,12 +201,12 @@ class OrdonnanceCreateUpdateSerializer(serializers.ModelSerializer):
         queryset=Patient.objects.none(),  # surchargé dans __init__
     )
 
-    # ── rendezvous — queryset=None car import circulaire au niveau module ──────
+    # ── rendezvous — queryset=objects.none() car import circulaire au niveau module ──────
     # La surcharge se fait dans __init__ avec un import local
     # C'est la même technique que rendezvous/serializers.py utilise pour
     # importer _get_role / _get_user_id dans __init__ et validate()
     rendezvous = serializers.PrimaryKeyRelatedField(
-        queryset=None,         # surchargé dans __init__
+        queryset=Ordonnance.objects.none(),  # surchargé dans __init__
         required=False,
         allow_null=True,
     )

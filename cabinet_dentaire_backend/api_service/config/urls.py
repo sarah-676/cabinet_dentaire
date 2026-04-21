@@ -24,13 +24,13 @@ urlpatterns = [
 
     # ── Apps métier ────────────────────────────────────────────────────
     path("api/", include("patients.urls")),
-    # path("api/", include("rendezvous.urls")),    # à décommenter quand prêt
-    # path("api/", include("radios.urls")),
-    # path("api/", include("ordonnances.urls")),
+    path("api/", include("rendezvous.urls")),
+    path("api/", include("radios.urls")),
+    path("api/", include("ordonnances.urls")),
     # path("api/", include("dental_chart.urls")),
-    # path("api/", include("treatments.urls")),
-    # path("api/", include("dossiers.urls")),
-    path("api/", include("notifications.urls")),   # ✅ TOI
+    path("api/", include("treatments.urls")),
+    path("api/", include("dossiers.urls")),
+    path("api/", include("notifications.urls")),
     path("api/health/", health_check, name="health"),  # ✅ pour Consul
 
     # ── Swagger / OpenAPI ──────────────────────────────────────────────

@@ -1,16 +1,129 @@
 """
-gateway_app/middleware.py — API Gateway
-=========================================
-CORRECTION : validation JWT via PyJWT directement.
-PyJWT est déjà installé (dépendance de djangorestframework_simplejwt).
-On ne passe plus par TokenBackend de simplejwt — zéro dépendance
-aux modèles Django (ContentType, AbstractBaseUser).
-
-Les deux middlewares fonctionnent exactement comme avant :
-  1. RateLimitMiddleware  → limite par IP (sliding window)
-  2. JWTGatewayMiddleware → valide le Bearer token localement
+Django settings for gateway service
 """
 
+import os
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
+
+# Build paths
+BASE_DIR = Path(__file__).resolve().parent.parent
+SECRET_KEY = 'gateway-django-secret-key-do-not-use-in-production'
+DEBUG = True
+ALLOWED_HOSTS = ['*']
+
+# Applications
+INSTALLED_APPS = [
+    'django.contrib.contenttypes',
+    'django.contrib.auth',
+    'gateway_app',
+]
+
+MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'config.settings.RateLimitMiddleware',
+    'config.settings.JWTGatewayMiddleware',
+]
+
+ROOT_URLCONF = 'config.urls'
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = 'config.wsgi.application'
+
+# Database (on n'en a pas besoin pour le gateway, mais Django en demande une)
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
+}
+
+# Logging
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'DEBUG',
+    },
+    'loggers': {
+        'gateway_app': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+    },
+}
+
+# Gateway Configuration
+SERVICE_PORT = 8080
+AUTH_SERVICE_URL = 'http://localhost:8001'
+API_SERVICE_URL = 'http://localhost:8000'
+
+# CORS
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+]
+
+# Public paths (no JWT required)
+PUBLIC_PATHS = [
+    '/api/auth/login/',
+    '/api/auth/refresh/',
+    '/api/auth/health/',
+    '/api/gateway/health/',
+    '/api/gateway/status/',
+    '/api/gateway/services/',
+]
+
+# Rate limiting
+RATE_LIMIT_PER_MINUTE = 60
+
+# Proxy timeout
+PROXY_TIMEOUT = 30
+PROXY_MAX_CONNECTIONS = 100
+PROXY_MAX_KEEPALIVE = 20
+
+# JWT Configuration (MUST MATCH auth_service)
+SIMPLE_JWT = {
+    'SIGNING_KEY': os.environ.get('JWT_SECRET_KEY', os.environ.get('SECRET_KEY', 'django-insecure-changeme')),
+    'ALGORITHM': 'HS256',
+    'USER_ID_CLAIM': 'user_id',
+}
+
+# Middleware implementation
 import time
 import logging
 from collections import defaultdict
@@ -21,22 +134,12 @@ from django.conf import settings
 from django.http import JsonResponse
 
 logger = logging.getLogger("gateway_app")
-DEBUG = True
-ALLOWED_HOSTS = ["*"]
 
-# ══════════════════════════════════════════════════════════════════════════════
-# RATE LIMITER — stockage en mémoire (thread-safe)
-# ══════════════════════════════════════════════════════════════════════════════
-
-_rate_store: dict[str, list[float]] = defaultdict(list)
-_rate_lock  = Lock()
-ROOT_URLCONF = "config.urls" 
+_rate_store = defaultdict(list)
+_rate_lock = Lock()
 
 def _is_rate_limited(ip: str, limit: int, window: int = 60) -> bool:
-    """
-    Sliding window rate limiter.
-    Retourne True si la requête doit être bloquée.
-    """
+    """Sliding window rate limiter."""
     now = time.monotonic()
     with _rate_lock:
         timestamps = _rate_store[ip]
@@ -46,96 +149,59 @@ def _is_rate_limited(ip: str, limit: int, window: int = 60) -> bool:
         timestamps.append(now)
         return False
 
-
 def _get_client_ip(request) -> str:
-    """Extrait l'IP réelle — supporte X-Forwarded-For (derrière Traefik)."""
+    """Extrait l'IP réelle — supporte X-Forwarded-For."""
     xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
     if xff:
         return xff.split(",")[0].strip()
     return request.META.get("REMOTE_ADDR", "unknown")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MIDDLEWARE 1 — Rate Limit
-# ══════════════════════════════════════════════════════════════════════════════
-
 class RateLimitMiddleware:
-    """Limite le débit par IP — configurable via settings.RATE_LIMIT_PER_MINUTE."""
-
+    """Limite le débit par IP."""
     def __init__(self, get_response):
-        self.get_response     = get_response
+        self.get_response = get_response
         self.limit_per_minute = getattr(settings, "RATE_LIMIT_PER_MINUTE", 60)
 
     def __call__(self, request):
         ip = _get_client_ip(request)
-
         if _is_rate_limited(ip, limit=self.limit_per_minute, window=60):
             logger.warning("Rate limit dépassé — IP=%s", ip)
             return JsonResponse(
                 {
-                    "error":  "Too Many Requests",
+                    "error": "Too Many Requests",
                     "detail": f"Limite de {self.limit_per_minute} requêtes/minute dépassée.",
-                    "code":   "rate_limit_exceeded",
+                    "code": "rate_limit_exceeded",
                 },
                 status=429,
-                headers={
-                    "Retry-After":       "60",
-                    "X-RateLimit-Limit": str(self.limit_per_minute),
-                    "X-Gateway-Service": "cabinet-gateway",
-                },
             )
-
         response = self.get_response(request)
         response["X-RateLimit-Limit"] = str(self.limit_per_minute)
         return response
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MIDDLEWARE 2 — JWT Gateway Auth (via PyJWT — sans dépendance modèles Django)
-# ══════════════════════════════════════════════════════════════════════════════
-
 class JWTGatewayMiddleware:
-    """
-    Valide le JWT Bearer token localement via PyJWT.
-
-    Avantage vs simplejwt.TokenBackend :
-      - PyJWT ne dépend PAS de django.contrib.contenttypes ni auth
-      - Même résultat : décode et vérifie la signature avec JWT_SECRET_KEY
-      - Zéro appel réseau → ultra rapide
-
-    Chemins PUBLIC_PATHS → passent sans token.
-    Tous les autres /api/** → token Bearer obligatoire.
-
-    Injecte dans request :
-      request.gateway_user  → dict {id, email, role, full_name}
-      request.gateway_token → str du token brut
-    """
-
+    """Valide le JWT Bearer token localement via PyJWT."""
     def __init__(self, get_response):
-        self.get_response   = get_response
-        jwt_conf            = getattr(settings, "SIMPLE_JWT", {})
-        self._secret        = jwt_conf.get(
+        self.get_response = get_response
+        jwt_conf = getattr(settings, "SIMPLE_JWT", {})
+        self._secret = jwt_conf.get(
             "SIGNING_KEY",
             getattr(settings, "SECRET_KEY", ""),
         )
-        self._algorithm     = jwt_conf.get("ALGORITHM", "HS256")
+        self._algorithm = jwt_conf.get("ALGORITHM", "HS256")
         self._user_id_claim = jwt_conf.get("USER_ID_CLAIM", "user_id")
-        self._public_paths  = getattr(settings, "PUBLIC_PATHS", [])
+        self._public_paths = getattr(settings, "PUBLIC_PATHS", [])
 
     def __call__(self, request):
         path = request.path_info
 
-        # ── Chemins publics → pas de vérification ────────────────────
         if self._is_public(path):
-            request.gateway_user  = None
+            request.gateway_user = None
             request.gateway_token = None
             return self.get_response(request)
 
-        # ── Chemins non-API → laisser Django gérer ────────────────────
         if not path.startswith("/api/"):
             return self.get_response(request)
 
-        # ── Extraire le Bearer token ──────────────────────────────────
         auth_header = request.META.get("HTTP_AUTHORIZATION", "")
         if not auth_header.startswith("Bearer "):
             return self._unauthorized("Token d'authentification manquant.")
@@ -144,7 +210,6 @@ class JWTGatewayMiddleware:
         if not raw_token:
             return self._unauthorized("Token vide.")
 
-        # ── Valider localement via PyJWT ──────────────────────────────
         user_data = self._decode_token(raw_token)
         if user_data is None:
             return self._unauthorized("Token invalide ou expiré.")
@@ -152,21 +217,15 @@ class JWTGatewayMiddleware:
         if not user_data.get("is_active", True):
             return self._unauthorized("Compte désactivé.")
 
-        # ── Injecter dans la requête ──────────────────────────────────
-        request.gateway_user  = user_data
+        request.gateway_user = user_data
         request.gateway_token = raw_token
         return self.get_response(request)
-
-    # ── Helpers ───────────────────────────────────────────────────────
 
     def _is_public(self, path: str) -> bool:
         return any(path.startswith(p) or path == p for p in self._public_paths)
 
-    def _decode_token(self, token: str) -> dict | None:
-        """
-        Décode et vérifie le JWT avec PyJWT.
-        Même résultat que simplejwt.TokenBackend — sans ses dépendances.
-        """
+    def _decode_token(self, token: str):
+        """Décode et vérifie le JWT avec PyJWT."""
         try:
             payload = pyjwt.decode(
                 token,
@@ -175,17 +234,16 @@ class JWTGatewayMiddleware:
                 options={"verify_exp": True},
             )
 
-            # Vérifier que c'est un access token (pas refresh)
             if payload.get("token_type") != "access":
                 logger.debug("Token type invalide: %s", payload.get("token_type"))
                 return None
 
             return {
-                "id":        str(payload.get(self._user_id_claim, "")),
-                "user_id":   str(payload.get(self._user_id_claim, "")),
-                "email":     payload.get("email",     ""),
+                "id": str(payload.get(self._user_id_claim, "")),
+                "user_id": str(payload.get(self._user_id_claim, "")),
+                "email": payload.get("email", ""),
                 "full_name": payload.get("full_name", ""),
-                "role":      payload.get("role",      ""),
+                "role": payload.get("role", ""),
                 "is_active": payload.get("is_active", True),
             }
 
@@ -202,13 +260,9 @@ class JWTGatewayMiddleware:
     def _unauthorized(self, detail: str) -> JsonResponse:
         return JsonResponse(
             {
-                "error":  "Unauthorized",
+                "error": "Unauthorized",
                 "detail": detail,
-                "code":   "authentication_failed",
+                "code": "authentication_failed",
             },
             status=401,
-            headers={
-                "WWW-Authenticate":  "Bearer",
-                "X-Gateway-Service": "cabinet-gateway",
-            },
         )
