@@ -1,0 +1,132 @@
+# ============================================================
+# traefik/dynamic.yml — Configuration dynamique Traefik
+# Routage, services, middlewares
+# ============================================================
+#
+# Ce fichier est rechargé automatiquement par Traefik (watch: true).
+# Modifier les URLs de services selon ton environnement.
+#
+# Routing priority (du plus spécifique au plus général) :
+#   1. /api/auth/**  → auth_service  (priorité 20)
+#   2. /api/**       → api_service   (priorité 10)
+#   3. /api/gateway/** → gateway app (health/status)
+# ============================================================
+
+http:
+
+  # ── Routers ──────────────────────────────────────────────────
+
+  routers:
+
+    # Auth Service — /api/auth/**
+    auth-router:
+      rule: "PathPrefix(`/api/auth`)"
+      entryPoints: ["web"]
+      service: auth-service
+      middlewares:
+        - rate-limit
+        - secure-headers
+        - request-id
+      priority: 20   # Plus prioritaire que api-router
+
+    # API Service — /api/**
+    api-router:
+      rule: "PathPrefix(`/api`)"
+      entryPoints: ["web"]
+      service: api-service
+      middlewares:
+        - rate-limit
+        - secure-headers
+        - request-id
+      priority: 10
+
+    # Gateway Health — /api/gateway/**
+    gateway-router:
+      rule: "PathPrefix(`/api/gateway`)"
+      entryPoints: ["web"]
+      service: gateway-service
+      priority: 30   # Le plus prioritaire
+
+  # ── Services (upstream) ───────────────────────────────────────
+
+  services:
+
+    gateway-service:
+      loadBalancer:
+        healthCheck:
+          path: "/api/gateway/health/"
+          interval: "10s"
+          timeout:  "3s"
+        servers:
+          - url: "http://localhost:8080"
+
+    auth-service:
+      loadBalancer:
+        healthCheck:
+          path: "/api/auth/health/"
+          interval: "10s"
+          timeout:  "3s"
+        servers:
+          - url: "http://localhost:8001"
+        # Pour load balancing (ajouter des instances) :
+        # - url: "http://localhost:8003"
+
+    api-service:
+      loadBalancer:
+        healthCheck:
+          path: "/api/health/"
+          interval: "10s"
+          timeout:  "3s"
+        servers:
+          - url: "http://localhost:8000"
+        # Pour load balancing :
+        # - url: "http://localhost:8002"
+
+  # ── Middlewares ───────────────────────────────────────────────
+
+  middlewares:
+
+    # Rate limiting — 60 req/s en moyenne, burst 100
+    rate-limit:
+      rateLimit:
+        average: 60
+        burst: 100
+        sourceCriterion:
+          ipStrategy:
+            depth: 1   # Lire l'IP depuis X-Forwarded-For
+
+    # Headers de sécurité
+    secure-headers:
+      headers:
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        accessControlAllowHeaders:
+          - Authorization
+          - Content-Type
+          - X-Requested-With
+        accessControlAllowOriginList:
+          - "http://localhost:3000"
+          - "http://localhost:5173"
+        accessControlAllowCredentials: true
+        accessControlMaxAge: 100
+        addVaryHeader: true
+        # Security headers
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-Powered-By: ""            # Masquer la techno
+          Server: "CabinetDentaire"   # Nom personnalisé
+
+    # Injection d'un UUID unique par requête (tracabilité)
+    request-id:
+      headers:
+        customRequestHeaders:
+          X-Request-Source: "traefik"

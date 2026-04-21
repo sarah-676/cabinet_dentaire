@@ -1,0 +1,73 @@
+# ============================================================
+# traefik/traefik.yml — Configuration statique Traefik
+# Cabinet Dentaire — Microservices
+# ============================================================
+#
+# Traefik est le reverse proxy placé EN FRONTAL (port 80).
+# Il reçoit toutes les requêtes et les route vers les services.
+#
+# Architecture :
+#   Client → Traefik (:80) → Gateway (:8080) → auth_service (:8001)
+#                                              → api_service  (:8000)
+#
+# Dashboard : http://localhost:8082/dashboard/
+# ============================================================
+
+# ── API / Dashboard ───────────────────────────────────────────
+api:
+  dashboard: true
+  insecure: true   # OK pour développement local — désactiver en production
+
+# ── Points d'entrée (ports d'écoute) ─────────────────────────
+entryPoints:
+
+  web:
+    address: ":80"
+    # En production, ajouter redirection HTTPS :
+    # http:
+    #   redirections:
+    #     entryPoint:
+    #       to: websecure
+    #       scheme: https
+
+  websecure:
+    address: ":443"
+
+  traefik:
+    address: ":8082"   # Port du dashboard
+
+# ── Providers (sources de configuration) ─────────────────────
+providers:
+
+  # Fichier de configuration dynamique (routes, services, middlewares)
+  file:
+   filename: "./traefik/dynamic.yml"
+   watch: true   # Recharge automatique si le fichier change
+
+  # Consul Catalog — découverte automatique des services
+  # Activer quand Consul est lancé
+  #consulCatalog:
+   # endpoint:
+     # address: "127.0.0.1:8500"
+    #prefix: "traefik"
+    #exposedByDefault: false
+    #refreshInterval: "15s"
+
+# ── Logging ───────────────────────────────────────────────────
+log:
+  level: INFO       # DEBUG pour plus de détails
+  format: common
+
+accessLog:
+  format: common
+  filters:
+    statusCodes:
+      - "400-599"   # Logger seulement les erreurs
+
+# ── Métriques (Prometheus) ────────────────────────────────────
+# Activer pour intégration Prometheus/Grafana
+# metrics:
+#   prometheus:
+#     addEntryPointsLabels: true
+#     addServicesLabels: true
+#     entryPoint: traefik
