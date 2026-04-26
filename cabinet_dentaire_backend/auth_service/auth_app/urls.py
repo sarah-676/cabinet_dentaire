@@ -30,6 +30,11 @@ urlpatterns = [
     # ── Profil personnel ──────────────────────────────────────────────
     path("profile/",                 ProfileView.as_view(),        name="auth-profile"),
     path("profile/change-password/", ChangePasswordView.as_view(), name="auth-change-password"),
+    path(
+        "internal/users/<uuid:user_id>/",
+        InternalUserView.as_view(),
+        name="auth-internal-user",
+    ),
 
     # ── CRUD utilisateurs (router) ────────────────────────────────────
     path("", include(router.urls)),
@@ -37,11 +42,7 @@ urlpatterns = [
     # ── Endpoint interne pour api_service ─────────────────────────────
     # Utilisé par common/services.py → verifier_dentiste_actif()
     # Sécurisé par Bearer token
-    path(
-        "internal/users/<uuid:user_id>/",
-        InternalUserView.as_view(),
-        name="auth-internal-user",
-    ),
+    
 
     # ── Health check ──────────────────────────────────────────────────
     path("health/", HealthView.as_view(), name="auth-health"),

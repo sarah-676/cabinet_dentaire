@@ -1,94 +1,79 @@
 /**
  * src/components/ui/Modal.jsx
- * ─────────────────────────────
- * Modal générique réutilisable.
- *
- * Props :
- *   title    : string
- *   onClose  : () => void
- *   children : ReactNode
- *   wide     : bool — modal large (800px vs 500px)
+ * Modal réutilisable — Tailwind CSS
  */
+import { memo, useEffect } from "react";
+import { createPortal } from "react-dom";
 
-import { useEffect } from "react";
-
-export default function Modal({ title, onClose, children, wide = false }) {
+function Modal({ isOpen, onClose, title, children, size = "md", footer }) {
   // Fermer avec Escape
   useEffect(() => {
-    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    if (!isOpen) return;
+    const handler = (e) => { if (e.key === "Escape") onClose?.(); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+  }, [isOpen, onClose]);
 
   // Bloquer le scroll
   useEffect(() => {
-    document.body.style.overflow = "hidden";
+    document.body.style.overflow = isOpen ? "hidden" : "";
     return () => { document.body.style.overflow = ""; };
-  }, []);
+  }, [isOpen]);
 
-  return (
-    <div style={styles.overlay} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ ...styles.modal, maxWidth: wide ? "800px" : "520px" }}>
+  if (!isOpen) return null;
+
+  const sizes = {
+    sm:  "max-w-sm",
+    md:  "max-w-lg",
+    lg:  "max-w-2xl",
+    xl:  "max-w-4xl",
+    full: "max-w-[95vw]",
+  };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+    >
+      {/* Overlay */}
+      <div
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
+
+      {/* Panel */}
+      <div
+        className={`relative w-full ${sizes[size]} bg-white rounded-2xl shadow-xl flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-200`}
+      >
         {/* Header */}
-        <div style={styles.header}>
-          <h2 style={styles.title}>{title}</h2>
-          <button onClick={onClose} style={styles.closeBtn} aria-label="Fermer">✕</button>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+          <h3 className="text-base font-semibold text-gray-900">{title}</h3>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
+
         {/* Body */}
-        <div style={styles.body}>{children}</div>
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          {children}
+        </div>
+
+        {/* Footer optionnel */}
+        {footer && (
+          <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-100 flex-shrink-0">
+            {footer}
+          </div>
+        )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
-const styles = {
-  overlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0,0,0,0.45)",
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "center",
-    zIndex: 1000,
-    padding: "2rem 1rem",
-    overflowY: "auto",
-  },
-  modal: {
-    background: "#ffffff",
-    borderRadius: "16px",
-    width: "100%",
-    boxShadow: "0 20px 60px rgba(0,0,0,0.15)",
-    maxHeight: "90vh",
-    overflow: "hidden",
-    display: "flex",
-    flexDirection: "column",
-  },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "1.25rem 1.5rem",
-    borderBottom: "1px solid #e5e7eb",
-    flexShrink: 0,
-  },
-  title: {
-    fontSize: "1.05rem",
-    fontWeight: 600,
-    color: "#111827",
-    margin: 0,
-  },
-  closeBtn: {
-    background: "none",
-    border: "none",
-    cursor: "pointer",
-    fontSize: "1rem",
-    color: "#6b7280",
-    padding: "4px",
-    lineHeight: 1,
-  },
-  body: {
-    padding: "1.5rem",
-    overflowY: "auto",
-    flex: 1,
-  },
-};
+export default memo(Modal);

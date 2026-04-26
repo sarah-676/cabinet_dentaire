@@ -1,35 +1,38 @@
 /**
  * src/context/AuthContext.jsx
- * ────────────────────────────
- * Contexte global : user courant, token, login, logout.
- * Persiste la session via localStorage.
+ * ✅ CORRIGÉ : ajout updateUser() + import setStoredUser
  */
 
-import { createContext, useContext, useState, useEffect, useCallback } from "react";
-import { login as apiLogin, logout as apiLogout } from "../api/authAPI";
 import {
-  setTokens,
-  clearTokens,
-  getStoredUser,
-  getToken,
-  getRefreshToken,
+  createContext, useContext,
+  useState, useEffect, useCallback,
+} from "react";
+import { login as apiLogin, logout as apiLogout, verifyToken } from "../api/authAPI";
+import {
+  setTokens, setStoredUser, clearTokens,
+  getStoredUser, getToken, getRefreshToken,
 } from "../utils/token";
 import { getHomeRoute } from "../utils/roles";
 
-const AuthContext = createContext(null);
+export const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user,    setUser]    = useState(getStoredUser);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
 
-  /** Connexion — retourne la route home selon le rôle */
+  useEffect(() => {
+    const token = getToken();
+    if (!token) { setLoading(false); return; }
+    verifyToken(token)
+      .catch(() => { clearTokens(); setUser(null); })
+      .finally(() => setLoading(false));
+  }, []);
+
   const login = useCallback(async (email, password) => {
-    setLoading(true);
-    setError(null);
+    setLoading(true); setError(null);
     try {
       const data = await apiLogin(email, password);
-      // data = { access, refresh, user: { id, email, full_name, role, is_active } }
       setTokens(data.access, data.refresh, data.user);
       setUser(data.user);
       return getHomeRoute(data.user.role);
@@ -40,30 +43,31 @@ export function AuthProvider({ children }) {
         "Identifiants incorrects.";
       setError(msg);
       throw new Error(msg);
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   }, []);
 
-  /** Déconnexion */
   const logout = useCallback(async () => {
     const refresh = getRefreshToken();
-    try {
-      if (refresh) await apiLogout(refresh);
-    } catch {
-      // silencieux — on déconnecte quoi qu'il arrive
-    } finally {
-      clearTokens();
-      setUser(null);
-    }
+    try { if (refresh) await apiLogout(refresh); } catch { /* silencieux */ }
+    finally { clearTokens(); setUser(null); }
   }, []);
 
-  /** Vérifie si l'utilisateur est authentifié */
+  // ✅ Met à jour le user dans le state ET dans localStorage
+  const updateUser = useCallback((nouvellesInfos) => {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const updated = { ...prev, ...nouvellesInfos };
+      setStoredUser(updated); // ✅ persist après refresh de page
+      return updated;
+    });
+  }, []);
+
   const isAuthenticated = !!user && !!getToken();
+  if (loading) return null;
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, error, login, logout, isAuthenticated }}
+      value={{ user, loading, error, login, logout, isAuthenticated, updateUser }}
     >
       {children}
     </AuthContext.Provider>

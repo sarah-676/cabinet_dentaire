@@ -1,1 +1,10 @@
-cabinet_dentaire_backend/traefik.exe 
+.env
+__pycache__/
+*.pyc
+venv/
+node_modules/
+dist/
+*.sqlite3
+.DS_Store
+media/
+staticfiles/

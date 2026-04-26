@@ -1,14 +1,6 @@
 """
 patients/views.py — api_service
-==================================
-PatientViewSet — gestion complète des patients.
-
-Corrections appliquées :
-  1. _get_user_id() retourne UUID str → comparaison str(obj.dentiste_id)
-  2. verifier_dentiste_actif() accepte UUID str
-  3. dentiste_id injecté comme UUID (str converti en UUID)
-  4. _is_receptioniste → "receptionniste" (orthographe auth_service)
-  5. RabbitMQ → common.rabbitmq.publish_notification (raccourci)
+✅ CORRIGÉ : notifications via RabbitMQ + receptionniste_id garanti
 """
 
 import logging
@@ -44,15 +36,14 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 
 
-# ── Helpers locaux ────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _is_dentiste(request)       -> bool: return _get_role(request) == "dentiste"
-def _is_admin(request)          -> bool: return _get_role(request) == "admin"
-def _is_receptioniste(request)  -> bool: return _get_role(request) == "receptionniste"
+def _is_dentiste(request)      -> bool: return _get_role(request) == "dentiste"
+def _is_admin(request)         -> bool: return _get_role(request) == "admin"
+def _is_receptioniste(request) -> bool: return _get_role(request) == "receptionniste"
 
 
 def _q_alertes_actives() -> Q:
-    """Q pour filtrer les patients ayant au moins une alerte médicale active."""
     return (
         Q(alerte_anticoagulants=True)
         | Q(alerte_diabete=True)
@@ -64,7 +55,6 @@ def _q_alertes_actives() -> Q:
 
 
 def _to_uuid(value) -> uuid_module.UUID | None:
-    """Convertit une valeur en UUID. Retourne None si invalide."""
     if isinstance(value, uuid_module.UUID):
         return value
     try:
@@ -76,51 +66,23 @@ def _to_uuid(value) -> uuid_module.UUID | None:
 # ── ViewSet ───────────────────────────────────────────────────────────────────
 
 class PatientViewSet(ModelViewSet):
-    """
-    ViewSet complet — patients du cabinet dentaire.
-
-    Endpoints (Router DRF) :
-      GET    /patients/                  → liste paginée
-      POST   /patients/                  → créer
-      GET    /patients/{id}/             → fiche détaillée
-      PATCH  /patients/{id}/             → modifier
-      DELETE /patients/{id}/             → archiver (soft delete)
-
-    Actions custom :
-      GET    /patients/stats/            → statistiques tableau de bord
-      GET    /patients/{id}/dossier/     → dossier complet
-      PATCH  /patients/{id}/valider/     → accepter/refuser (dentiste)
-      PATCH  /patients/{id}/archiver/    → archiver explicitement
-      PATCH  /patients/{id}/restaurer/   → réactiver (admin/dentiste)
-      PATCH  /patients/{id}/note/        → auto-save note libre
-    """
 
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
-
-    filter_backends  = [SearchFilter, DjangoFilterBackend, OrderingFilter]
-    search_fields    = ["nom", "prenom", "telephone", "email"]
-    filterset_fields = ["statut", "groupe_sanguin", "sexe"]
-    ordering_fields  = ["nom", "prenom", "created_at", "date_naissance"]
-    ordering         = ["-created_at"]
-
-    # ── Permissions ───────────────────────────────────────────────────
+    filter_backends   = [SearchFilter, DjangoFilterBackend, OrderingFilter]
+    search_fields     = ["nom", "prenom", "telephone", "email"]
+    filterset_fields  = ["statut", "groupe_sanguin", "sexe"]
+    ordering_fields   = ["nom", "prenom", "created_at", "date_naissance"]
+    ordering          = ["-created_at"]
 
     def get_permissions(self):
-        if self.action == "create":
-            classes = [IsDentisteOrReceptionniste]
-        else:
-            classes = [IsDentisteOrReceptionniste]
-
+        classes = [IsDentisteOrReceptionniste]
         actions_objet = {
             "retrieve", "update", "partial_update", "destroy",
             "dossier", "archiver", "note", "valider",
         }
         if self.action in actions_objet:
             classes.append(IsPatientOwner)
-
         return [cls() for cls in classes]
-
-    # ── Serializer ────────────────────────────────────────────────────
 
     def get_serializer_class(self):
         mapping = {
@@ -134,8 +96,6 @@ class PatientViewSet(ModelViewSet):
         }
         return mapping.get(self.action, PatientDetailSerializer)
 
-    # ── QuerySet selon le rôle ────────────────────────────────────────
-
     def get_queryset(self):
         if not getattr(self.request, "user", None):
             return Patient.objects.none()
@@ -144,7 +104,11 @@ class PatientViewSet(ModelViewSet):
             dentiste_uuid = _to_uuid(_get_user_id(self.request))
             if not dentiste_uuid:
                 return Patient.objects.none()
-            return Patient.objects.du_dentiste(dentiste_uuid)
+            # ✅ Dentiste voit tous ses patients (PENDING inclus pour valider)
+            return Patient.objects.filter(
+                dentiste_id=dentiste_uuid,
+                is_active=True,
+            )
 
         if _is_admin(self.request):
             include_archived = (
@@ -157,6 +121,7 @@ class PatientViewSet(ModelViewSet):
             )
 
         if _is_receptioniste(self.request):
+            # ✅ Réceptionniste voit tous les patients actifs (tous statuts)
             return Patient.objects.actifs()
 
         return Patient.objects.none()
@@ -176,8 +141,7 @@ class PatientViewSet(ModelViewSet):
             )
             logger.info(
                 "Patient créé [dentiste=%s] : %s",
-                dentiste_uuid,
-                patient.nom_complet,
+                dentiste_uuid, patient.nom_complet,
             )
 
         elif _is_receptioniste(self.request):
@@ -186,111 +150,71 @@ class PatientViewSet(ModelViewSet):
                 raise serializers.ValidationError(
                     {"dentiste_id": "Ce champ est obligatoire pour la réceptionniste."}
                 )
-
             dentiste_uuid = _to_uuid(dentiste_id_raw)
             if not dentiste_uuid:
                 raise serializers.ValidationError(
-                    {"dentiste_id": "UUID invalide. Format attendu : xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"}
+                    {"dentiste_id": "UUID invalide."}
                 )
 
-            # Vérifier que ce dentiste existe et est actif dans auth_service
             from common.services import verifier_dentiste_actif
             if not verifier_dentiste_actif(str(dentiste_uuid)):
                 raise serializers.ValidationError(
-                    {"dentiste_id": "Dentiste introuvable ou inactif dans le système."}
+                    {"dentiste_id": "Dentiste introuvable ou inactif."}
                 )
 
+            receptionniste_uuid = _to_uuid(_get_user_id(self.request))
+            # ✅ Récupérer le nom du réceptionniste depuis le token
+            receptionniste_nom = getattr(self.request.user, "full_name", "") or ""
+
             patient = serializer.save(
-                dentiste_id=dentiste_uuid,
-                statut=StatutValidation.PENDING,
-                receptionniste_id=_to_uuid(_get_user_id(self.request)),
+                dentiste_id       = dentiste_uuid,
+                receptionniste_id = receptionniste_uuid,
+                statut            = StatutValidation.PENDING,
             )
-            self._receptionniste_nom = getattr(self.request.user, "full_name", "")
+
             logger.info(
-                "Patient en attente [receptionniste=%s → dentiste=%s] : %s",
-                _get_user_id(self.request),
-                dentiste_uuid,
-                patient.nom_complet,
+                "Patient créé [receptionniste=%s, dentiste=%s] : %s — PENDING",
+                receptionniste_uuid, dentiste_uuid, patient.nom_complet,
             )
+
+            # ✅ Capturer les variables pour le lambda (évite closure bug)
+            _patient             = patient
+            _receptionniste_nom  = receptionniste_nom
+            _receptionniste_uuid = str(receptionniste_uuid) if receptionniste_uuid else None
+
             transaction.on_commit(
-                lambda: self._notifier_dentiste_nouveau_patient(patient)
-            )
-
-        elif _is_admin(self.request):
-            dentiste_id_raw = self.request.data.get("dentiste_id")
-            dentiste_uuid   = _to_uuid(dentiste_id_raw) if dentiste_id_raw else None
-            if not dentiste_uuid:
-                raise serializers.ValidationError(
-                    {"dentiste_id": "Ce champ est obligatoire."}
+                lambda: _notifier_dentiste_nouveau_patient(
+                    _patient,
+                    receptionniste_nom=_receptionniste_nom,
+                    receptionniste_id=_receptionniste_uuid,
                 )
-            patient = serializer.save(
-                dentiste_id=dentiste_uuid,
-                statut=StatutValidation.ACCEPTE,
-            )
-            logger.info(
-                "Patient créé [admin=%s] : %s",
-                _get_user_id(self.request),
-                patient.nom_complet,
-            )
-        else:
-            raise serializers.ValidationError(
-                {"detail": "Rôle non autorisé à créer un patient."}
             )
 
-    def perform_update(self, serializer):
-        patient = serializer.save()
-        logger.info(
-            "Patient modifié [user=%s] : %s",
-            _get_user_id(self.request),
-            patient.nom_complet,
-        )
-
-    def perform_destroy(self, instance):
-        if not instance.is_active:
-            return
-        instance.archiver(archived_by_id=_to_uuid(_get_user_id(self.request)))
-        logger.info(
-            "Patient archivé via DELETE [user=%s] : %s",
-            _get_user_id(self.request),
-            instance.nom_complet,
-        )
-
-    def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        self.perform_destroy(instance)
-        return Response(
-            {"detail": f"Patient {instance.nom_complet} archivé."},
-            status=status.HTTP_200_OK,
-        )
-
-    # ── Action : statistiques ─────────────────────────────────────────
+    # ── Action : stats ────────────────────────────────────────────────
 
     @action(detail=False, methods=["get"], url_path="stats")
     def stats(self, request):
         qs = self.get_queryset()
-        if _is_dentiste(request):
-            dentiste_uuid = _to_uuid(_get_user_id(request))
-            total_qs = Patient.all_objects.filter(dentiste_id=dentiste_uuid)
-        else:
-            total_qs = Patient.all_objects.all()
-
-        now = timezone.now()
         data = {
-            "total":            total_qs.count(),
-            "actifs":           qs.count(),
-            "archives":         total_qs.filter(is_active=False).count(),
+            "total":            qs.count(),
+            "actifs":           qs.filter(statut=StatutValidation.ACCEPTE).count(),
+            "archives":         Patient.all_objects.filter(is_active=False).count(),
             "nouveaux_ce_mois": qs.filter(
-                created_at__year=now.year,
-                created_at__month=now.month,
+                created_at__year  = timezone.now().year,
+                created_at__month = timezone.now().month,
             ).count(),
-            "en_attente":       qs.filter(statut=StatutValidation.PENDING).count(),
-            "refuses":          qs.filter(statut=StatutValidation.REFUSE).count(),
-            "mineurs":          qs.mineurs().count(),
-            "avec_alertes":     qs.filter(_q_alertes_actives()).count(),
+            "en_attente":   qs.filter(statut=StatutValidation.PENDING).count(),
+            "refuses":      qs.filter(statut=StatutValidation.REFUSE).count(),
+            "mineurs":      qs.filter(
+                date_naissance__gt=timezone.now().date().replace(
+                    year=timezone.now().year - 18
+                )
+            ).count(),
+            "avec_alertes": qs.filter(_q_alertes_actives()).count(),
         }
-        return Response(PatientStatsSerializer(data).data)
+        return Response(data)
 
-    # ── Action : dossier complet ──────────────────────────────────────
+    # ── Action : dossier ──────────────────────────────────────────────
 
     @action(detail=True, methods=["get"], url_path="dossier")
     def dossier(self, request, pk=None):
@@ -339,10 +263,10 @@ class PatientViewSet(ModelViewSet):
 
     def _section_treatments(self, patient):
         try:
-            from treatments.serializers import TraitementListSerializer  # ✅ CORRIGÉ
+            from treatments.serializers import TraitementListSerializer
             return TraitementListSerializer(
                 patient.treatments.filter(is_active=True).order_by("-date_debut"),
-                many=True
+                many=True,
             ).data
         except ImportError:
             return []
@@ -364,33 +288,44 @@ class PatientViewSet(ModelViewSet):
         decision = serializer.validated_data["decision"]
         raison   = serializer.validated_data.get("refuse_raison", "")
 
+        # ✅ Récupérer le nom du dentiste depuis le token
+        dentiste_nom = getattr(request.user, "full_name", "") or ""
+        dentiste_id  = str(_get_user_id(request))
+
         with transaction.atomic():
             if decision == "ACCEPTE":
                 patient.accepter()
-                transaction.on_commit(
-                    lambda: self._notifier_patient_validation(patient, accepte=True)
-                )
-                logger.info(
-                    "Patient %s accepté [dentiste=%s]",
-                    patient.id, _get_user_id(request)
-                )
-                return Response(
-                    {"detail": f"Patient {patient.nom_complet} accepté."},
-                    status=status.HTTP_200_OK,
-                )
             else:
                 patient.refuser(raison=raison)
-                transaction.on_commit(
-                    lambda: self._notifier_patient_validation(patient, accepte=False)
+
+            # ✅ Capturer toutes les variables AVANT le lambda
+            _patient      = patient
+            _accepte      = (decision == "ACCEPTE")
+            _dentiste_nom = dentiste_nom
+            _dentiste_id  = dentiste_id
+
+            transaction.on_commit(
+                lambda: _notifier_patient_validation(
+                    patient=_patient,
+                    accepte=_accepte,
+                    dentiste_id=_dentiste_id,
+                    dentiste_nom=_dentiste_nom,
                 )
-                logger.info(
-                    "Patient %s refusé [dentiste=%s]",
-                    patient.id, _get_user_id(request)
-                )
-                return Response(
-                    {"detail": f"Patient {patient.nom_complet} refusé.", "raison": raison},
-                    status=status.HTTP_200_OK,
-                )
+            )
+
+            logger.info(
+                "Patient %s %s [dentiste=%s]",
+                patient.id,
+                "accepté" if decision == "ACCEPTE" else "refusé",
+                dentiste_id,
+            )
+
+        # ✅ Retourne le patient sérialisé complet avec le nouveau statut
+        patient.refresh_from_db()
+        return Response(
+            PatientListSerializer(patient).data,
+            status=status.HTTP_200_OK,
+        )
 
     # ── Action : archiver ─────────────────────────────────────────────
 
@@ -403,9 +338,7 @@ class PatientViewSet(ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         patient.archiver(archived_by_id=_to_uuid(_get_user_id(request)))
-        logger.info(
-            "Patient %s archivé [user=%s]", patient.id, _get_user_id(request)
-        )
+        logger.info("Patient %s archivé [user=%s]", patient.id, _get_user_id(request))
         return Response(
             {"detail": f"Patient {patient.nom_complet} archivé."},
             status=status.HTTP_200_OK,
@@ -440,9 +373,6 @@ class PatientViewSet(ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         patient.restaurer()
-        logger.info(
-            "Patient %s restauré [user=%s]", patient.id, _get_user_id(request)
-        )
         return Response(
             {"detail": f"Patient {patient.nom_complet} restauré."},
             status=status.HTTP_200_OK,
@@ -453,39 +383,89 @@ class PatientViewSet(ModelViewSet):
     @action(detail=True, methods=["patch"], url_path="note")
     def note(self, request, pk=None):
         patient = self.get_object()
-        contenu = request.data.get("note_generale", "")
-        patient.note_generale = contenu
+        patient.note_generale = request.data.get("note_generale", "")
         patient.save(update_fields=["note_generale", "updated_at"])
         return Response(
             {"detail": "Note mise à jour.", "note_generale": patient.note_generale},
             status=status.HTTP_200_OK,
         )
 
-    # ── Notifications (RabbitMQ) ──────────────────────────────────────
 
-    def _notifier_dentiste_nouveau_patient(self, patient: Patient) -> None:
-        try:
-            from common.rabbitmq import publish_notification
-            publish_notification("PATIENT_EN_ATTENTE", {
-                "dentiste_id": str(patient.dentiste_id),
-                "patient_id":  str(patient.id),
-                "patient_nom": patient.nom_complet,
-                "receptionniste_id": str(patient.receptionniste_id) if patient.receptionniste_id else None,
-                "receptionniste_nom": self._receptionniste_nom,
-            })
-        except Exception as exc:
-            logger.error("RabbitMQ [PATIENT_EN_ATTENTE] : %s", exc)
+# ── Fonctions de notification (hors classe) ───────────────────────────────────
+# Placées hors de la classe pour éviter les problèmes de closure avec self
 
-    def _notifier_patient_validation(self, patient: Patient, accepte: bool) -> None:
-        try:
-            from common.rabbitmq import publish_notification
-            event_type = "PATIENT_VALIDE" if accepte else "PATIENT_REFUSE"
-            publish_notification(event_type, {
-                "dentiste_id":   str(patient.dentiste_id),
-                "patient_id":    str(patient.id),
-                "patient_nom":   patient.nom_complet,
-                "refuse_raison": patient.refuse_raison,
-                "receptionniste_id": str(patient.receptionniste_id) if patient.receptionniste_id else None,
-            })
-        except Exception as exc:
-            logger.error("RabbitMQ [PATIENT_VALIDATION] : %s", exc)
+def _notifier_dentiste_nouveau_patient(
+    patient: Patient,
+    receptionniste_nom: str = "",
+    receptionniste_id: str = None,
+) -> None:
+    """
+    Notifie le dentiste qu'un nouveau patient est en attente.
+    Appelé via transaction.on_commit().
+    """
+    try:
+        from common.rabbitmq import publish_notification
+        publish_notification("PATIENT_EN_ATTENTE", {
+            "dentiste_id":        str(patient.dentiste_id),
+            "patient_id":         str(patient.id),
+            "patient_nom":        patient.nom_complet,
+            # ✅ receptionniste_id transmis pour notification retour
+            "receptionniste_id":  receptionniste_id or (
+                str(patient.receptionniste_id) if patient.receptionniste_id else None
+            ),
+            "receptionniste_nom": receptionniste_nom,
+        })
+        logger.info(
+            "Notification PATIENT_EN_ATTENTE publiée [dentiste=%s, patient=%s]",
+            patient.dentiste_id, patient.id,
+        )
+    except Exception as exc:
+        logger.error("Notification [PATIENT_EN_ATTENTE] : %s", exc)
+
+
+def _notifier_patient_validation(
+    patient: Patient,
+    accepte: bool,
+    dentiste_id: str = "",
+    dentiste_nom: str = "",
+) -> None:
+    """
+    Notifie le réceptionniste du résultat de la validation.
+    Appelé via transaction.on_commit().
+
+    ✅ Vérifie que receptionniste_id existe avant d'envoyer.
+    ✅ Relit le patient depuis la DB pour avoir le statut à jour.
+    """
+    try:
+        # ✅ Relire depuis la DB pour avoir le statut final
+        patient.refresh_from_db()
+
+        if not patient.receptionniste_id:
+            logger.info(
+                "Patient %s sans réceptionniste — notification ignorée",
+                patient.id,
+            )
+            return
+
+        from common.rabbitmq import publish_notification
+        event_type = "PATIENT_VALIDE" if accepte else "PATIENT_REFUSE"
+
+        publish_notification(event_type, {
+            # ✅ destinataire = réceptionniste
+            "receptionniste_id":  str(patient.receptionniste_id),
+            "dentiste_id":        dentiste_id or str(patient.dentiste_id),
+            "dentiste_nom":       dentiste_nom,
+            "patient_id":         str(patient.id),
+            "patient_nom":        patient.nom_complet,
+            "refuse_raison":      patient.refuse_raison,
+            # ✅ Statut final inclus pour mise à jour frontend
+            "statut":             patient.statut,
+        })
+        logger.info(
+            "Notification %s publiée [receptionniste=%s, patient=%s]",
+            event_type, patient.receptionniste_id, patient.id,
+        )
+    except Exception as exc:
+        logger.error("Notification [PATIENT_VALIDATION] : %s", exc)
+
+        

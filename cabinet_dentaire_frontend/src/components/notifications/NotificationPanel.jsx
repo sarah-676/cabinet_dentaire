@@ -1,31 +1,9 @@
 /**
- * src/components/notifications/NotificationPanel.jsx
- * ────────────────────────────────────────────────────
- * Panneau latéral droit qui affiche toutes les notifications
- * de l'utilisateur connecté.
- *
- * Connexion backend :
- *   GET  /api/notifications/          → liste (filtrable is_read, type)
- *   GET  /api/notifications/stats/    → { total, non_lues, lues, par_type }
- *   PATCH /api/notifications/{id}/lire/
- *   POST  /api/notifications/lire-tout/
- *   DELETE /api/notifications/{id}/
- *
- * WebSocket reçoit des messages de type :
- *   { type: "notification", data: { id, titre, message, type, niveau, created_at } }
+ * Panneau latéral — données depuis NotificationContext (REST + WebSocket).
  */
+import { useMemo, useState } from "react";
+import { useNotificationContext } from "../../context/NotificationContext";
 
-import { useEffect, useState, useCallback } from "react";
-import {
-  getNotifications,
-  getNotificationStats,
-  marquerLue,
-  marquerToutesLues,
-  deleteNotification,
-} from "../../api/notificationsAPI";
-import { useNotifications } from "../../context/NotificationContext";
-
-// ── Couleurs selon TypeNotification backend ───────────────────────────────────
 const TYPE_CONFIG = {
   PATIENT_EN_ATTENTE: { color: "#d97706", bg: "#fffbeb", icon: "👤", label: "Patient en attente" },
   PATIENT_VALIDE:     { color: "#059669", bg: "#ecfdf5", icon: "✓",  label: "Patient accepté" },
@@ -46,98 +24,67 @@ const NIVEAU_DOT = {
 };
 
 export default function NotificationPanel({ onClose }) {
-  const { setNonLues } = useNotifications();
+  const {
+    notifications,
+    stats,
+    loading,
+    marquerLue,
+    marquerToutesLues,
+    supprimerNotification,
+    refetch,
+  } = useNotificationContext();
 
-  const [notifs,   setNotifs]   = useState([]);
-  const [stats,    setStats]    = useState(null);
-  const [loading,  setLoading]  = useState(true);
-  const [filter,   setFilter]   = useState("all"); // all | unread | read
+  const [filter, setFilter]   = useState("all");
   const [deleting, setDeleting] = useState(null);
-  const [marking,  setMarking]  = useState(null);
+  const [marking, setMarking]  = useState(null);
 
-  // ── Charger ────────────────────────────────────────────────────────
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = {};
-      if (filter === "unread") params.is_read = "false";
-      if (filter === "read")   params.is_read = "true";
-
-      const [nData, sData] = await Promise.all([
-        getNotifications(params),
-        getNotificationStats(),
-      ]);
-      setNotifs(nData.results || nData);
-      setStats(sData);
-      setNonLues(sData.non_lues || 0);
-    } catch (err) {
-      console.error("Notifications load error:", err);
-    } finally {
-      setLoading(false);
-    }
-  }, [filter, setNonLues]);
-
-  useEffect(() => { load(); }, [load]);
-
-  // ── Actions ────────────────────────────────────────────────────────
+  const notifs = useMemo(() => {
+    if (filter === "unread") return notifications.filter((n) => !n.is_read);
+    if (filter === "read") return notifications.filter((n) => n.is_read);
+    return notifications;
+  }, [notifications, filter]);
 
   const handleLire = async (id) => {
     setMarking(id);
     try {
       await marquerLue(id);
-      setNotifs(prev =>
-        prev.map(n => n.id === id ? { ...n, is_read: true } : n)
-      );
-      setStats(prev => prev ? { ...prev, non_lues: Math.max(0, prev.non_lues - 1), lues: prev.lues + 1 } : prev);
-      setNonLues(prev => Math.max(0, prev - 1));
-    } finally { setMarking(null); }
+    } finally {
+      setMarking(null);
+    }
   };
 
   const handleLireTout = async () => {
     try {
-      const result = await marquerToutesLues();
-      await load();
-    } catch (err) {
-      console.error(err);
+      await marquerToutesLues();
+    } catch {
+      refetch();
     }
   };
 
   const handleDelete = async (id) => {
     setDeleting(id);
     try {
-      await deleteNotification(id);
-      setNotifs(prev => prev.filter(n => n.id !== id));
-      await getNotificationStats().then(s => {
-        setStats(s);
-        setNonLues(s.non_lues || 0);
-      });
-    } finally { setDeleting(null); }
+      await supprimerNotification(id);
+    } finally {
+      setDeleting(null);
+    }
   };
 
-  // ── Formatage date ─────────────────────────────────────────────────
-
   const formatDate = (iso) => {
-    const d    = new Date(iso);
-    const now  = new Date();
+    const d = new Date(iso);
+    const now = new Date();
     const diff = Math.floor((now - d) / 1000);
-    if (diff < 60)   return "À l'instant";
+    if (diff < 60) return "À l'instant";
     if (diff < 3600) return `Il y a ${Math.floor(diff / 60)} min`;
-    if (diff < 86400)return `Il y a ${Math.floor(diff / 3600)} h`;
+    if (diff < 86400) return `Il y a ${Math.floor(diff / 3600)} h`;
     return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
   };
 
-  // ── Rendu ──────────────────────────────────────────────────────────
-
   return (
     <>
-      {/* Overlay */}
       <div style={styles.overlay} onClick={onClose} />
 
-      {/* Panneau */}
       <div style={styles.panel}>
-
-        {/* Header */}
         <div style={styles.panelHeader}>
           <div>
             <h2 style={styles.panelTitle}>Notifications</h2>
@@ -149,15 +96,16 @@ export default function NotificationPanel({ onClose }) {
           </div>
           <div style={styles.headerActions}>
             {stats?.non_lues > 0 && (
-              <button onClick={handleLireTout} style={styles.markAllBtn}>
+              <button type="button" onClick={handleLireTout} style={styles.markAllBtn}>
                 Tout marquer lu
               </button>
             )}
-            <button onClick={onClose} style={styles.closeBtn}>✕</button>
+            <button type="button" onClick={onClose} style={styles.closeBtn}>
+              ✕
+            </button>
           </div>
         </div>
 
-        {/* Stats rapides par type */}
         {stats?.par_type && Object.keys(stats.par_type).length > 0 && (
           <div style={styles.typeBar}>
             {Object.entries(stats.par_type).slice(0, 4).map(([type, count]) => {
@@ -171,11 +119,15 @@ export default function NotificationPanel({ onClose }) {
           </div>
         )}
 
-        {/* Filtres */}
         <div style={styles.filters}>
-          {[["all", "Toutes"], ["unread", "Non lues"], ["read", "Lues"]].map(([val, label]) => (
+          {[
+            ["all", "Toutes"],
+            ["unread", "Non lues"],
+            ["read", "Lues"],
+          ].map(([val, label]) => (
             <button
               key={val}
+              type="button"
               onClick={() => setFilter(val)}
               style={{ ...styles.filterBtn, ...(filter === val ? styles.filterBtnActive : {}) }}
             >
@@ -187,7 +139,6 @@ export default function NotificationPanel({ onClose }) {
           ))}
         </div>
 
-        {/* Liste */}
         <div style={styles.list}>
           {loading ? (
             <div style={styles.loadingMsg}>Chargement...</div>
@@ -199,8 +150,8 @@ export default function NotificationPanel({ onClose }) {
               </p>
             </div>
           ) : (
-            notifs.map(notif => {
-              const cfg    = TYPE_CONFIG[notif.type] || TYPE_CONFIG.SYSTEME;
+            notifs.map((notif) => {
+              const cfg = TYPE_CONFIG[notif.type] || TYPE_CONFIG.SYSTEME;
               const dotCol = NIVEAU_DOT[notif.niveau] || "#6b7280";
 
               return (
@@ -212,12 +163,10 @@ export default function NotificationPanel({ onClose }) {
                     borderLeft: `3px solid ${notif.is_read ? "#e5e7eb" : cfg.color}`,
                   }}
                 >
-                  {/* Icône */}
                   <div style={{ ...styles.notifIcon, background: cfg.bg, color: cfg.color }}>
                     {cfg.icon}
                   </div>
 
-                  {/* Corps */}
                   <div style={styles.notifBody}>
                     <div style={styles.notifTop}>
                       <span style={{ ...styles.notifTitle, fontWeight: notif.is_read ? 400 : 600 }}>
@@ -234,10 +183,10 @@ export default function NotificationPanel({ onClose }) {
                     <span style={styles.notifTime}>{formatDate(notif.created_at)}</span>
                   </div>
 
-                  {/* Actions */}
                   <div style={styles.notifActions}>
                     {!notif.is_read && (
                       <button
+                        type="button"
                         onClick={() => handleLire(notif.id)}
                         disabled={marking === notif.id}
                         style={styles.readBtn}
@@ -247,6 +196,7 @@ export default function NotificationPanel({ onClose }) {
                       </button>
                     )}
                     <button
+                      type="button"
                       onClick={() => handleDelete(notif.id)}
                       disabled={deleting === notif.id}
                       style={styles.deleteBtn}
@@ -260,13 +210,11 @@ export default function NotificationPanel({ onClose }) {
             })
           )}
         </div>
-
       </div>
     </>
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
 const styles = {
   overlay: {
     position: "fixed", inset: 0, background: "rgba(0,0,0,0.2)",

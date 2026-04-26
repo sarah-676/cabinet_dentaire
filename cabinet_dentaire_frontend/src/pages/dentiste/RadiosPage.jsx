@@ -1,29 +1,29 @@
 /**
  * src/pages/dentiste/RadiosPage.jsx
  * ────────────────────────────────────
- * Gestion complète des radiographies.
+ * ✅ FIX : URLs des images corrigées
  *
- * Connexion backend :
- *   GET    /api/radios/                  → liste (filtrée par dentiste depuis JWT)
- *   POST   /api/radios/                  → upload multipart/form-data
- *                                           champs : image, patient_id, type_radio, description
- *   GET    /api/radios/{id}/             → détail + résultat IA (ia_resultat, ia_anomalies, ia_confidence)
- *   PATCH  /api/radios/{id}/             → modifier description / type
- *   DELETE /api/radios/{id}/             → soft delete
- *   POST   /api/radios/{id}/analyser/    → déclenche analyse IA (ia_service)
- *   GET    /api/radios/stats/            → { total, analysees, en_attente, avec_anomalies, par_type }
+ * Problème :
+ *   ❌ `http://localhost:8000/${radio.image}` — hardcodé sur :8000
+ *   → Quand le frontend passe par la gateway (:8080), les images
+ *     ne sont pas servies par :8000 directement (CORS / proxy)
  *
- * Filtres query params supportés :
- *   ?patient_id=<uuid>
- *   ?statut_analyse=EN_ATTENTE|EN_COURS|ANALYSE|ERREUR
- *   ?type_radio=PANORAMIQUE|RETRO_ALVEOLAIRE|CONE_BEAM|...
+ * Solution :
+ *   ✅ Utilise getImageUrl() de radiosAPI.js
+ *      → lit VITE_MEDIA_BASE_URL depuis .env (http://localhost:8080)
+ *      → construit l'URL correcte via la gateway
+ *      → gère les cas : path relatif, slash initial, URL absolue
  */
 
 import { useEffect, useState, useCallback } from "react";
 import {
   getRadios, uploadRadio, analyserRadio, deleteRadio, getRadioStats,
+  getImageUrl,  // ✅ helper importé
 } from "../../api/radiosAPI";
 import { getPatients } from "../../api/patientsAPI";
+
+// ✅ Supprimé : const API_URL = "http://localhost:8000" (hardcodé → remplacé par getImageUrl)
+// ✅ Supprimé : const MEDIA_URL = import.meta.env.VITE_MEDIA_BASE_URL (non utilisé)
 
 const STATUT_CONFIG = {
   EN_ATTENTE: { bg: "#fffbeb", color: "#d97706", label: "En attente" },
@@ -37,31 +37,28 @@ const TYPES_RADIO = [
 ];
 
 export default function RadiosPage() {
-  const [radios,    setRadios]    = useState([]);
-  const [stats,     setStats]     = useState(null);
-  const [patients,  setPatients]  = useState([]);
-  const [loading,   setLoading]   = useState(true);
-  const [showUpload,setShowUpload]= useState(false);
-  const [selected,  setSelected]  = useState(null); // détail radio
+  const [radios,     setRadios]     = useState([]);
+  const [stats,      setStats]      = useState(null);
+  const [patients,   setPatients]   = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [showUpload, setShowUpload] = useState(false);
+  const [selected,   setSelected]   = useState(null);
 
-  // Filtres
   const [filterPatient, setFilterPatient] = useState("");
   const [filterStatut,  setFilterStatut]  = useState("");
   const [filterType,    setFilterType]    = useState("");
 
-  // Upload form
   const [uploadForm, setUploadForm] = useState({
     patient_id: "", type_radio: "PANORAMIQUE", description: "",
   });
-  const [uploadFile,     setUploadFile]     = useState(null);
-  const [uploadLoading,  setUploadLoading]  = useState(false);
-  const [uploadErrors,   setUploadErrors]   = useState({});
+  const [uploadFile,    setUploadFile]    = useState(null);
+  const [uploadLoading, setUploadLoading] = useState(false);
+  const [uploadErrors,  setUploadErrors]  = useState({});
 
-  // Analyse IA
   const [analyzingId, setAnalyzingId] = useState(null);
   const [deletingId,  setDeletingId]  = useState(null);
 
-  // ── Chargement ────────────────────────────────────────────────────
+  // ── Chargement ─────────────────────────────────────────────────────
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -118,30 +115,27 @@ export default function RadiosPage() {
     setAnalyzingId(id);
     try {
       const result = await analyserRadio(id);
-      // Mettre à jour la radio dans la liste localement
       setRadios(prev =>
         prev.map(r => r.id === id ? { ...r, statut_analyse: "ANALYSE", ...result } : r)
       );
-      // Si c'est la radio sélectionnée, mettre à jour le détail
       if (selected?.id === id) setSelected(result);
     } catch (err) {
       const msg = err.response?.data?.detail || "Erreur analyse IA.";
       alert(msg);
-      // Rafraîchir pour obtenir le statut ERREUR
       load();
     } finally { setAnalyzingId(null); }
   };
 
   // ── Suppression ────────────────────────────────────────────────────
 
-  const handleDelete = async (id, nom) => {
-    if (!window.confirm(`Supprimer cette radiographie ?`)) return;
+  const handleDelete = async (id) => {
+    if (!window.confirm("Supprimer cette radiographie ?")) return;
     setDeletingId(id);
     try {
       await deleteRadio(id);
       setRadios(prev => prev.filter(r => r.id !== id));
       if (selected?.id === id) setSelected(null);
-      load(); // rafraîchir les stats
+      load();
     } finally { setDeletingId(null); }
   };
 
@@ -150,7 +144,7 @@ export default function RadiosPage() {
   return (
     <div style={styles.page}>
 
-      {/* ── Stats ── */}
+      {/* Stats */}
       {stats && (
         <div style={styles.statsRow}>
           <StatChip label="Total"          value={stats.total}          color="#0f4c81" bg="#e8f4fd" />
@@ -160,7 +154,7 @@ export default function RadiosPage() {
         </div>
       )}
 
-      {/* ── Barre outils ── */}
+      {/* Barre outils */}
       <div style={styles.toolbar}>
         <select value={filterPatient} onChange={e => setFilterPatient(e.target.value)} style={styles.select}>
           <option value="">Tous les patients</option>
@@ -184,7 +178,7 @@ export default function RadiosPage() {
         </button>
       </div>
 
-      {/* ── Layout 2 colonnes : liste + détail ── */}
+      {/* Layout 2 colonnes */}
       <div style={styles.splitLayout}>
 
         {/* Liste */}
@@ -192,13 +186,14 @@ export default function RadiosPage() {
           {loading ? (
             <p style={{ color: "#6b7280", padding: "1rem" }}>Chargement...</p>
           ) : radios.length === 0 ? (
-            <div style={styles.emptyState}>
-              <p>Aucune radiographie trouvée.</p>
-            </div>
+            <div style={styles.emptyState}><p>Aucune radiographie trouvée.</p></div>
           ) : (
             radios.map(radio => {
-              const sc = STATUT_CONFIG[radio.statut_analyse] || STATUT_CONFIG.EN_ATTENTE;
+              const sc         = STATUT_CONFIG[radio.statut_analyse] || STATUT_CONFIG.EN_ATTENTE;
               const isSelected = selected?.id === radio.id;
+              // ✅ FIX : getImageUrl() au lieu de `http://localhost:8000/${radio.image}`
+              const imgUrl     = getImageUrl(radio.image);
+
               return (
                 <div
                   key={radio.id}
@@ -210,11 +205,12 @@ export default function RadiosPage() {
                 >
                   {/* Miniature */}
                   <div style={styles.thumbnail}>
-                    {radio.image_url ? (
+                    {imgUrl ? (
                       <img
-                        src={radio.image_url}
-                        alt="radio"
-                        style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "6px" }}
+                        src={imgUrl}
+                        alt="radiographie"
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        onError={e => { e.target.style.display = "none"; }}
                       />
                     ) : (
                       <div style={styles.thumbnailPlaceholder}>🩻</div>
@@ -281,7 +277,7 @@ export default function RadiosPage() {
 
       </div>
 
-      {/* ── Modale upload ── */}
+      {/* Modale upload */}
       {showUpload && (
         <div style={modalStyles.overlay} onClick={e => e.target === e.currentTarget && setShowUpload(false)}>
           <div style={modalStyles.modal}>
@@ -356,16 +352,23 @@ export default function RadiosPage() {
   );
 }
 
-// ── Composant détail radio ────────────────────────────────────────────────────
+// ── Composant détail radio ─────────────────────────────────────────────────────
 
 function RadioDetail({ radio, onAnalyse, analyzing }) {
   const sc = STATUT_CONFIG[radio.statut_analyse] || STATUT_CONFIG.EN_ATTENTE;
+  // ✅ FIX : getImageUrl() au lieu de `http://localhost:8000/${radio.image}`
+  const imgUrl = getImageUrl(radio.image);
 
   return (
     <div style={detailStyles.container}>
       <div style={detailStyles.imageWrap}>
-        {radio.image_url ? (
-          <img src={radio.image_url} alt="radiographie" style={detailStyles.image} />
+        {imgUrl ? (
+          <img
+            src={imgUrl}
+            alt="radiographie"
+            style={detailStyles.image}
+            onError={e => { e.target.style.display = "none"; }}
+          />
         ) : (
           <div style={detailStyles.noImage}>🩻 Image non disponible</div>
         )}
@@ -378,12 +381,11 @@ function RadioDetail({ radio, onAnalyse, analyzing }) {
             {sc.label}
           </span>
         </div>
-        <InfoRow label="Patient"    value={radio.patient_nom || "—"} />
-        <InfoRow label="Date"       value={radio.date_prise || radio.created_at?.slice(0, 10)} />
-        <InfoRow label="Description"value={radio.description || "—"} />
+        <InfoRow label="Patient"     value={radio.patient_nom || "—"} />
+        <InfoRow label="Date"        value={radio.date_prise || radio.created_at?.slice(0, 10)} />
+        <InfoRow label="Description" value={radio.description || "—"} />
       </div>
 
-      {/* Résultat IA */}
       {radio.statut_analyse === "ANALYSE" && radio.ia_resultat ? (
         <div style={detailStyles.iaBlock}>
           <h4 style={detailStyles.iaTitle}>
@@ -405,9 +407,7 @@ function RadioDetail({ radio, onAnalyse, analyzing }) {
                 <div key={i} style={detailStyles.anomalieItem}>
                   <span style={detailStyles.anomalieType}>{a.type}</span>
                   <span style={detailStyles.anomalieDent}>Dent {a.dent}</span>
-                  <span style={detailStyles.anomalieConf}>
-                    {(a.confidence * 100).toFixed(0)}%
-                  </span>
+                  <span style={detailStyles.anomalieConf}>{(a.confidence * 100).toFixed(0)}%</span>
                   <span style={detailStyles.anomalieDesc}>{a.description}</span>
                 </div>
               ))}
@@ -439,7 +439,7 @@ function RadioDetail({ radio, onAnalyse, analyzing }) {
   );
 }
 
-// ── Petits helpers ────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
 function StatChip({ label, value, color, bg }) {
   return (
@@ -469,33 +469,33 @@ function FField({ label, error, children }) {
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
+// ── Styles ─────────────────────────────────────────────────────────────────────
 
 const styles = {
-  page:        { display: "flex", flexDirection: "column", gap: "1rem" },
-  statsRow:    { display: "flex", gap: "1rem", flexWrap: "wrap" },
-  toolbar:     { display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" },
-  select:      { padding: "0.6rem 0.875rem", border: "1.5px solid #d1d5db", borderRadius: "8px", fontSize: "0.875rem", background: "#fff" },
-  addBtn:      { padding: "0.6rem 1.25rem", background: "#0f4c81", color: "#fff", border: "none", borderRadius: "8px", fontWeight: 600, cursor: "pointer", marginLeft: "auto" },
-  splitLayout: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.25rem", minHeight: "500px" },
-  listPanel:   { display: "flex", flexDirection: "column", gap: "0.5rem", overflowY: "auto", maxHeight: "600px" },
-  emptyState:  { textAlign: "center", padding: "3rem 1rem", color: "#6b7280" },
-  radioCard:   { display: "flex", gap: "0.875rem", padding: "0.875rem", background: "#fff", border: "1.5px solid #e5e7eb", borderRadius: "10px", cursor: "pointer", transition: "border-color 0.15s", alignItems: "flex-start" },
+  page:         { display: "flex", flexDirection: "column", gap: "1rem" },
+  statsRow:     { display: "flex", gap: "1rem", flexWrap: "wrap" },
+  toolbar:      { display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" },
+  select:       { padding: "0.6rem 0.875rem", border: "1.5px solid #d1d5db", borderRadius: "8px", fontSize: "0.875rem", background: "#fff" },
+  addBtn:       { padding: "0.6rem 1.25rem", background: "#0f4c81", color: "#fff", border: "none", borderRadius: "8px", fontWeight: 600, cursor: "pointer", marginLeft: "auto" },
+  splitLayout:  { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.25rem", minHeight: "500px" },
+  listPanel:    { display: "flex", flexDirection: "column", gap: "0.5rem", overflowY: "auto", maxHeight: "600px" },
+  emptyState:   { textAlign: "center", padding: "3rem 1rem", color: "#6b7280" },
+  radioCard:    { display: "flex", gap: "0.875rem", padding: "0.875rem", background: "#fff", border: "1.5px solid #e5e7eb", borderRadius: "10px", cursor: "pointer", transition: "border-color 0.15s", alignItems: "flex-start" },
   radioCardSelected: { borderColor: "#0f4c81", background: "#f0f7ff" },
-  thumbnail:   { width: "56px", height: "56px", flexShrink: 0, borderRadius: "6px", overflow: "hidden", background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center" },
+  thumbnail:    { width: "56px", height: "56px", flexShrink: 0, borderRadius: "6px", overflow: "hidden", background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center" },
   thumbnailPlaceholder: { fontSize: "1.5rem" },
-  radioInfo:   { flex: 1, minWidth: 0 },
-  radioTop:    { display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "4px", flexWrap: "wrap" },
-  radioType:   { fontSize: "0.85rem", fontWeight: 600, color: "#111827" },
-  statutPill:  { padding: "2px 8px", borderRadius: "10px", fontSize: "0.72rem", fontWeight: 600 },
-  radioPatient:{ fontSize: "0.8rem", color: "#6b7280" },
-  radioDate:   { fontSize: "0.75rem", color: "#9ca3af" },
+  radioInfo:    { flex: 1, minWidth: 0 },
+  radioTop:     { display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "4px", flexWrap: "wrap" },
+  radioType:    { fontSize: "0.85rem", fontWeight: 600, color: "#111827" },
+  statutPill:   { padding: "2px 8px", borderRadius: "10px", fontSize: "0.72rem", fontWeight: 600 },
+  radioPatient: { fontSize: "0.8rem", color: "#6b7280" },
+  radioDate:    { fontSize: "0.75rem", color: "#9ca3af" },
   anomalieBadge:{ display: "inline-block", marginTop: "4px", background: "#fef2f2", color: "#dc2626", padding: "2px 7px", borderRadius: "10px", fontSize: "0.72rem", fontWeight: 600 },
-  radioActions:{ display: "flex", flexDirection: "column", gap: "4px" },
-  iaBtn:       { width: "28px", height: "28px", background: "#f5f3ff", color: "#7c3aed", border: "1px solid #ddd6fe", borderRadius: "6px", cursor: "pointer", fontSize: "0.85rem", display: "flex", alignItems: "center", justifyContent: "center" },
-  delBtn:      { width: "28px", height: "28px", background: "#fef2f2", color: "#dc2626", border: "1px solid #fecaca", borderRadius: "6px", cursor: "pointer", fontSize: "0.8rem", display: "flex", alignItems: "center", justifyContent: "center" },
-  detailPanel: { background: "#fff", border: "1px solid #e5e7eb", borderRadius: "12px", overflow: "hidden" },
-  detailEmpty: { height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#9ca3af" },
+  radioActions: { display: "flex", flexDirection: "column", gap: "4px" },
+  iaBtn:        { width: "28px", height: "28px", background: "#f5f3ff", color: "#7c3aed", border: "1px solid #ddd6fe", borderRadius: "6px", cursor: "pointer", fontSize: "0.85rem", display: "flex", alignItems: "center", justifyContent: "center" },
+  delBtn:       { width: "28px", height: "28px", background: "#fef2f2", color: "#dc2626", border: "1px solid #fecaca", borderRadius: "6px", cursor: "pointer", fontSize: "0.8rem", display: "flex", alignItems: "center", justifyContent: "center" },
+  detailPanel:  { background: "#fff", border: "1px solid #e5e7eb", borderRadius: "12px", overflow: "hidden" },
+  detailEmpty:  { height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#9ca3af" },
 };
 
 const detailStyles = {

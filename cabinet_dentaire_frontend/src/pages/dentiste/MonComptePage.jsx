@@ -5,23 +5,34 @@
  * ─────────────────────────────────────────────
  * Partagé entre tous les rôles.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { updateProfile, changePassword } from "../../api/authAPI";
 
 export default function MonComptePage() {
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   const [form,    setForm]    = useState({ first_name: user?.first_name || "", last_name: user?.last_name || "", phone: user?.phone || "" });
   const [pwdForm, setPwdForm] = useState({ old_password: "", new_password: "", confirm: "" });
   const [msg,     setMsg]     = useState("");
   const [err,     setErr]     = useState("");
   const [saving,  setSaving]  = useState(false);
-
+  
+  useEffect(() => {
+    if (user) {
+      setForm({
+        first_name: user.first_name || "",
+        last_name: user.last_name || "",
+        phone: user.phone || "",
+      });
+    }
+  }, [user]);
   const handleProfile = async (e) => {
     e.preventDefault();
     setSaving(true); setMsg(""); setErr("");
     try {
-      await updateProfile(form);
+      const updatedUser = await updateProfile(form);
+      updateUser(updatedUser);
+      
       setMsg("Profil mis à jour avec succès.");
     } catch (e) {
       setErr(e.response?.data?.detail || "Erreur.");

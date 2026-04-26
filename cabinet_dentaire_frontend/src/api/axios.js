@@ -1,91 +1,110 @@
 /**
- * src/api/axios.js
- * ─────────────────
- * Instance Axios unique pour tout le frontend.
- *
- * - Injecte automatiquement le Bearer token sur chaque requête
- * - Si 401 → tente un refresh automatique une seule fois
- * - Si refresh échoue → logout + redirect /login
+ * src/api/axios.js — VERSION CORRIGÉE
+ * ─────────────────────────────────────
+ * Corrections :
+ *  1. URL refresh construite proprement (sans .replace fragile)
+ *  2. Vérification anti-boucle basée sur _retry uniquement (plus fiable)
+ *  3. setToken() utilisé au lieu de setTokens() pour le refresh
+ *     (on ne reçoit que access, pas refresh+user)
  */
 
 import axios from "axios";
-import { getToken, getRefreshToken, setToken, clearTokens } from "../utils/token";
+import {
+  getToken,
+  getRefreshToken,
+  setToken,       // ✅ pour le refresh : on met à jour access seulement
+  clearTokens,
+} from "../utils/token";
 
-const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8080";
+// ── Base URL ─────────────────────────────────────────────────────────────────
+const RAW_BASE =
+  import.meta.env.VITE_API_BASE_URL || "/api";
+const BASE_URL = String(RAW_BASE).replace(/\/+$/, "");
 
-// ── Instance principale ───────────────────────────────────────────────────────
+// URL dédiée au refresh (axios brut, hors instance `api`)
+const REFRESH_URL = `${BASE_URL}/auth/token/refresh/`;
 
 const api = axios.create({
   baseURL: BASE_URL,
+  timeout: 15_000,
   headers: { "Content-Type": "application/json" },
-  timeout: 15000,
 });
 
-// ── Request interceptor : injecter le token ───────────────────────────────────
-
+// ── Interceptor REQUEST : injecter le JWT ─────────────────────────────────────
 api.interceptors.request.use(
   (config) => {
     const token = getToken();
     if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+      config.headers["Authorization"] = `Bearer ${token}`;
     }
     return config;
   },
   (error) => Promise.reject(error)
 );
 
-// ── Response interceptor : gestion 401 + refresh ─────────────────────────────
-
+// ── Gestion du refresh 401 ───────────────────────────────────────────────────
 let isRefreshing = false;
 let failedQueue  = [];
 
-const processQueue = (error, token = null) => {
+function processQueue(error, token = null) {
   failedQueue.forEach((prom) => {
-    if (error) prom.reject(error);
-    else prom.resolve(token);
+    error ? prom.reject(error) : prom.resolve(token);
   });
   failedQueue = [];
-};
+}
 
+// ── Interceptor RESPONSE : refresh sur 401 ───────────────────────────────────
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
-    const originalRequest = error.config;
+    const original = error.config;
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      if (isRefreshing) {
-        // Mettre en file d'attente pendant le refresh
-        return new Promise((resolve, reject) => {
-          failedQueue.push({ resolve, reject });
-        })
-          .then((token) => {
-            originalRequest.headers.Authorization = `Bearer ${token}`;
-            return api(originalRequest);
-          })
-          .catch((err) => Promise.reject(err));
+    // ✅ Anti-boucle : on ne retry qu'une fois, et jamais sur l'endpoint refresh lui-même
+    if (
+      error.response?.status === 401 &&
+      !original._retry
+    ) {
+      // Sécurité : ne jamais retenter le refresh endpoint
+      if (original.url?.includes("token/refresh")) {
+        clearTokens();
+        window.location.href = "/login";
+        return Promise.reject(error);
       }
 
-      originalRequest._retry = true;
-      isRefreshing = true;
+      if (isRefreshing) {
+        // File d'attente pendant qu'un refresh est déjà en cours
+        return new Promise((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        }).then((token) => {
+          original.headers["Authorization"] = `Bearer ${token}`;
+          return api(original);
+        });
+      }
 
-      const refresh = getRefreshToken();
-      if (!refresh) {
-        _logout();
+      original._retry = true;
+      isRefreshing    = true;
+
+      const refreshToken = getRefreshToken();
+      if (!refreshToken) {
+        clearTokens();
+        window.location.href = "/login";
         return Promise.reject(error);
       }
 
       try {
-        const { data } = await axios.post(`${BASE_URL}/api/auth/token/refresh/`, {
-          refresh,
-        });
-        setToken(data.access);
-        api.defaults.headers.common.Authorization = `Bearer ${data.access}`;
-        processQueue(null, data.access);
-        originalRequest.headers.Authorization = `Bearer ${data.access}`;
-        return api(originalRequest);
+        // ✅ axios brut (pas api) pour éviter la boucle d'interceptors
+        const res = await axios.post(REFRESH_URL, { refresh: refreshToken });
+        const newAccess = res.data.access;
+
+        setToken(newAccess);            // ✅ setToken (access seulement)
+        processQueue(null, newAccess);
+
+        original.headers["Authorization"] = `Bearer ${newAccess}`;
+        return api(original);
       } catch (refreshError) {
         processQueue(refreshError, null);
-        _logout();
+        clearTokens();
+        window.location.href = "/login";
         return Promise.reject(refreshError);
       } finally {
         isRefreshing = false;
@@ -95,10 +114,5 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
-
-function _logout() {
-  clearTokens();
-  window.location.href = "/login";
-}
 
 export default api;

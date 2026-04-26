@@ -106,7 +106,7 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)],
+            "hosts": [REDIS_URL],
         },
     }
 }
@@ -155,6 +155,10 @@ CORS_ALLOWED_ORIGINS = os.environ.get(
     "CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173"
 ).split(",")
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = [
+    "content-type",
+    "authorization",
+]    
 
 # ── Media & Static ────────────────────────────────────────────────────────────
 MEDIA_URL   = "/media/"
@@ -232,8 +236,32 @@ LOGGING = {
     },
     "root":    {"handlers": ["console"], "level": "INFO"},
     "loggers": {
+        "notifications":  {"handlers": ["console"], "level": "DEBUG", "propagate": False},
         "patients":       {"handlers": ["console"], "level": "DEBUG", "propagate": False},
+        "rendezvous":     {"handlers": ["console"], "level": "DEBUG", "propagate": False},
+        "radios":         {"handlers": ["console"], "level": "DEBUG", "propagate": False},
+        "ordonnances":    {"handlers": ["console"], "level": "DEBUG", "propagate": False},
+        "dossiers":       {"handlers": ["console"], "level": "DEBUG", "propagate": False},
+        "dental_chart":   {"handlers": ["console"], "level": "DEBUG", "propagate": False},
+        "treatments":     {"handlers": ["console"], "level": "DEBUG", "propagate": False},
         "common":         {"handlers": ["console"], "level": "DEBUG", "propagate": False},
         "django.request": {"handlers": ["console"], "level": "WARNING"},
     },
 }
+CORS_ALLOW_ALL_ORIGINS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8080",
+]
+CORS_ALLOW_METHODS = [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "OPTIONS",
+]
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')

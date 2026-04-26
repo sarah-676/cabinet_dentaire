@@ -66,7 +66,7 @@ class JwtAuthMiddleware(BaseMiddleware):
         else:
             scope["user"] = AnonymousUser()
 
-        return await super().__call__(scope, receive, send)
+        return await self.inner(scope, receive, send)
 
     @database_sync_to_async
     def _authentifier(self, token: str):

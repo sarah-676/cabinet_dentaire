@@ -107,11 +107,8 @@ def radio_upload_path(instance, filename):
     Chemin de stockage : radios/<patient_id>/<year>/<month>/<filename>
     Chaque patient a son propre dossier.
     """
-    return (
-        f"radios/{instance.patient_id}/"
-        f"{timezone.now().strftime('%Y/%m')}/"
-        f"{filename}"
-    )
+    ext = filename.split('.')[-1]  # récupérer extension
+    return f"radios/{instance.patient_id}/{timezone.now().strftime('%Y/%m')}/{uuid.uuid4()}.{ext}"
 
 
 class Radio(models.Model):
@@ -173,7 +170,7 @@ class Radio(models.Model):
         verbose_name="Description / observations du dentiste",
     )
     date_prise = models.DateField(
-        default=timezone.now,
+        default=timezone.localdate,
         verbose_name="Date de prise de la radio",
         db_index=True,
     )

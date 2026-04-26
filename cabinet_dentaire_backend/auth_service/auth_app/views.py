@@ -16,7 +16,7 @@ from rest_framework_simplejwt.exceptions import TokenError
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter
 
 from auth_app.models import UserRole
-from auth_app.permissions import IsAdmin, IsAdminOrSelf
+from auth_app.permissions import IsAdmin, IsAdminOrSelf, IsInternalService
 from auth_app.serializers import (
     CustomTokenObtainPairSerializer,
     UserProfileSerializer,
@@ -339,3 +339,24 @@ class HealthView(APIView):
 
     def get(self, request):
         return Response({"status": "ok", "service": "auth_service"})
+
+# ── Endpoint interne pour api_service ─────────────────────────────────────────
+
+class InternalUserView(APIView):
+    """
+    GET /api/auth/internal/users/{user_id}/
+
+    Endpoint utilisé par api_service pour vérifier un utilisateur.
+    Sécurisé par X-Internal-Token (secret partagé, ne expire jamais).
+    """
+    permission_classes = [IsInternalService]   # ← étais IsAuthenticated
+
+    def get(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+            return Response(InternalUserSerializer(user).data)
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "Utilisateur introuvable."},
+                status=status.HTTP_404_NOT_FOUND,
+            )

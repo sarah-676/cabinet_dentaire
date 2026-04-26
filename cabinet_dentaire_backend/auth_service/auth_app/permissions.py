@@ -1,6 +1,6 @@
 from rest_framework.permissions import BasePermission
 from auth_app.models import UserRole
-
+import os
 
 class IsAdmin(BasePermission):
     message = "Accès réservé aux administrateurs."
@@ -47,3 +47,18 @@ class IsAdminOrSelf(BasePermission):
             request.user.role == UserRole.ADMIN
             or obj.pk == request.user.pk
         )
+
+class IsInternalService(BasePermission):
+    """
+    Permission pour les appels inter-services.
+    Vérifie le header X-Internal-Token contre INTERNAL_SERVICE_TOKEN dans .env.
+    N'utilise PAS JWT — n'expire jamais.
+    """
+    message = "Token inter-service invalide ou manquant."
+
+    def has_permission(self, request, view):
+        expected_token = os.environ.get("INTERNAL_SERVICE_TOKEN", "")
+        if not expected_token:
+            return False
+        received_token = request.headers.get("X-Internal-Token", "")
+        return received_token == expected_token

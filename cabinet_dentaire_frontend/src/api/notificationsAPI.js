@@ -2,7 +2,7 @@
  * src/api/notificationsAPI.js
  */
 import api from "./axios";
-const BASE = "/api/notifications";
+const BASE = "/notifications";
 
 export const getNotifications = async (params = {}) => {
   const { data } = await api.get(`${BASE}/`, { params });

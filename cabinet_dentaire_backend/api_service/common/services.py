@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # ── Helper interne ────────────────────────────────────────────────────────────
 
-def _get_auth_headers() -> dict:
+def _get_auth_headers()  -> dict:
     """
     Headers pour les appels inter-services vers auth_service.
 
@@ -44,13 +44,12 @@ def _get_auth_headers() -> dict:
             "les appels inter-services vont échouer."
         )
 
-    headers = {"Content-Type": "application/json"}
-    if token.count(".") == 2:
-        headers["Authorization"] = f"Bearer {token}"
-    else:
-        headers["X-Internal-Token"] = token
+    
 
-    return headers
+    return {
+        "Content-Type": "application/json",
+        "X-Internal-Token": token,   # ← plus de Bearer JWT
+    }
 
 
 # ── Vérification dentiste ─────────────────────────────────────────────────────

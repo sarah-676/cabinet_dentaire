@@ -1,37 +1,6 @@
 """
 notifications/consumers.py — api_service
-==========================================
-WebSocket consumer Django Channels.
-
-CORRECTION BUG 4 :
-  ❌ Ancienne version : vérifie request.user.is_authenticated
-     → RemoteUser (défini dans ws_middleware.py) n'hérite pas de AbstractBaseUser
-     → is_authenticated pouvait être manquant ou lever AttributeError
-  ✅ Nouvelle version : vérifie isinstance(user, AnonymousUser) et présence de user.id
-     → Compatible avec RemoteUser défini dans ws_middleware.py
-
-Connexion WebSocket :
-  ws://api-service/ws/notifications/?token=<access_token>
-
-Le frontend reçoit en JSON :
-  {
-    "id":          "uuid",
-    "type":        "PATIENT_EN_ATTENTE",
-    "niveau":      "INFO",
-    "titre":       "Nouveau patient en attente",
-    "message":     "...",
-    "patient_id":  "uuid" | null,
-    "patient_nom": "...",
-    "rdv_id":      "uuid" | null,
-    "acteur_nom":  "...",
-    "is_read":     false,
-    "created_at":  "2026-04-17T10:00:00Z"
-  }
-
-Actions depuis le frontend :
-  {"action": "mark_read",     "id": "<uuid>"}  → marquer une notif lue
-  {"action": "mark_all_read"}                   → tout marquer lu
-  {"action": "ping"}                            → keep-alive → {"action": "pong"}
+✅ CORRIGÉ : refus explicite pour le rôle admin (code 4003)
 """
 
 import json
@@ -43,44 +12,48 @@ from django.contrib.auth.models import AnonymousUser
 
 logger = logging.getLogger("notifications")
 
+# ✅ Rôles autorisés à recevoir des notifications WebSocket
+ROLES_AUTORISES = {"dentiste", "receptionniste"}
+
 
 def _est_authentifie(user) -> bool:
-    """
-    ✅ BUG 4 CORRIGÉ : vérifie si l'user est authentifié de façon compatible
-    avec RemoteUser (ws_middleware.py) qui a is_authenticated=True comme attribut de classe.
-    """
     if user is None:
         return False
     if isinstance(user, AnonymousUser):
         return False
-    # RemoteUser a is_authenticated = True (attribut de classe)
     return bool(getattr(user, "is_authenticated", False))
 
 
 class NotificationConsumer(AsyncWebsocketConsumer):
-    """
-    Consumer WebSocket pour les notifications temps réel.
-    Authentification via token JWT passé en query string (?token=...).
-    """
 
     async def connect(self):
         user = self.scope.get("user")
 
+        # 1. Vérifier l'authentification
         if not _est_authentifie(user):
             logger.warning("WebSocket refusé — non authentifié")
             await self.close(code=4001)
             return
 
-        # ✅ user.id peut être un UUID ou str — on normalise en str
+        # ✅ 2. Vérifier que le rôle est autorisé (pas admin)
+        role = getattr(user, "role", "")
+        if role not in ROLES_AUTORISES:
+            logger.info(
+                "WebSocket refusé — rôle '%s' non autorisé pour les notifications",
+                role,
+            )
+            await self.close(code=4003)
+            return
+
+        # 3. Connexion acceptée
         self.user_id    = str(user.id)
         self.group_name = f"notifications_{self.user_id}"
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
-        logger.info("WebSocket connecté [user=%s]", self.user_id)
+        logger.info("WebSocket connecté [user=%s, role=%s]", self.user_id, role)
 
-        # Envoyer immédiatement le compteur de non-lues
         await self._envoyer_compteur()
 
     async def disconnect(self, close_code):
@@ -92,10 +65,6 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             )
 
     async def receive(self, text_data):
-        """
-        Messages reçus depuis le frontend.
-        Actions : mark_read | mark_all_read | ping
-        """
         try:
             data   = json.loads(text_data)
             action = data.get("action")
@@ -131,17 +100,9 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         except Exception as exc:
             logger.error("WebSocket erreur receive : %s", exc)
 
-    # ── Handler appelé par group_send depuis services.py ─────────────
-
     async def notification_message(self, event):
-        """
-        Reçoit depuis le channel layer (group_send type="notification.message")
-        et transmet au client WebSocket.
-        """
         await self.send(json.dumps(event["data"], default=str))
         await self._envoyer_compteur()
-
-    # ── Helpers DB ────────────────────────────────────────────────────
 
     @database_sync_to_async
     def _marquer_lue(self, notif_id: str) -> bool:

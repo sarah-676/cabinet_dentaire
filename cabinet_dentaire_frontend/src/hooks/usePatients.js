@@ -1,163 +1,149 @@
 /**
  * src/hooks/usePatients.js
- * ─────────────────────────
- * Hook métier — gestion des patients.
- *
- * Encapsule toute la logique d'appel API patients :
- *   - Chargement avec filtres
- *   - CRUD complet
- *   - Validation (accepter / refuser)
- *   - Stats
- *
- * Champs retournés par PatientListSerializer (backend) :
- *   id, nom_complet, nom, prenom, age, sexe, telephone,
- *   date_naissance, groupe_sanguin, statut, is_active,
- *   created_at, nb_alertes_critiques
- *
- * Stats retournées par /patients/stats/ :
- *   total, actifs, archives, nouveaux_ce_mois,
- *   en_attente, refuses, mineurs, avec_alertes
+ * ✅ CORRIGÉ : suppression de { data } — patientsAPI retourne data directement
  */
 
-import { useState, useCallback, useEffect } from "react";
-import {
-  getPatients,
-  getPatientStats,
-  createPatient,
-  updatePatient,
-  deletePatient,
-  validerPatient,
-  archiverPatient,
-  restaurerPatient,
-} from "../api/patientsAPI";
+import { useCallback, useReducer, useState } from "react";
+import * as API from "../api/patientsAPI";
 
-export function usePatients(initialFilters = {}) {
-  const [patients,  setPatients]  = useState([]);
-  const [stats,     setStats]     = useState(null);
-  const [loading,   setLoading]   = useState(false);
+const init = { patients: [], loading: false, error: null };
+
+function reducer(state, action) {
+  switch (action.type) {
+    case "FETCH_START":
+      return { ...state, loading: true, error: null };
+    case "FETCH_OK":
+      return { ...state, loading: false, patients: action.payload };
+    case "FETCH_ERROR":
+      return { ...state, loading: false, error: action.payload };
+    case "ADD":
+      return { ...state, patients: [action.payload, ...state.patients] };
+    case "UPDATE":
+      return {
+        ...state,
+        patients: state.patients.map((p) =>
+          p.id === action.payload.id ? { ...p, ...action.payload } : p
+        ),
+      };
+    case "REMOVE":
+      return {
+        ...state,
+        patients: state.patients.filter((p) => p.id !== action.payload),
+      };
+    case "SET_STATUT":
+      return {
+        ...state,
+        patients: state.patients.map((p) =>
+          p.id === action.payload.id
+            ? { ...p, statut: action.payload.statut, refuse_raison: action.payload.refuse_raison ?? p.refuse_raison }
+            : p
+        ),
+      };
+    default:
+      return state;
+  }
+}
+
+export function usePatients() {
+  const [state,        dispatch]        = useReducer(reducer, init);
+  const [stats,        setStats]        = useState(null);
   const [statsLoading, setStatsLoading] = useState(false);
-  const [error,     setError]     = useState(null);
-  const [filters,   setFilters]   = useState(initialFilters);
-  const [pagination, setPagination] = useState({ count: 0, next: null, previous: null });
 
-  // ── Charger la liste ────────────────────────────────────────────────
-  const fetchPatients = useCallback(async (overrideFilters = null) => {
-    setLoading(true);
-    setError(null);
+  // ✅ CORRIGÉ : API.getPatients() retourne data directement (pas { data })
+  const fetchPatients = useCallback(async (params = {}) => {
+    dispatch({ type: "FETCH_START" });
     try {
-      const params = overrideFilters ?? filters;
-      const data   = await getPatients(params);
-
-      // DRF peut retourner { results, count, next, previous } ou un tableau direct
-      if (Array.isArray(data)) {
-        setPatients(data);
-        setPagination({ count: data.length, next: null, previous: null });
-      } else {
-        setPatients(data.results || []);
-        setPagination({
-          count:    data.count    || 0,
-          next:     data.next     || null,
-          previous: data.previous || null,
-        });
-      }
+      const data = await API.getPatients(params);
+      const list = Array.isArray(data) ? data : (data.results ?? []);
+      dispatch({ type: "FETCH_OK", payload: list });
+      return list;
     } catch (err) {
-      setError(err.response?.data?.detail || "Erreur lors du chargement des patients.");
-    } finally {
-      setLoading(false);
+      const msg = err?.response?.data?.detail ?? "Impossible de charger les patients.";
+      dispatch({ type: "FETCH_ERROR", payload: msg });
+      throw err;
     }
-  }, [filters]);
+  }, []);
 
-  // ── Charger les stats ───────────────────────────────────────────────
+  // ✅ CORRIGÉ : API.getPatientStats() retourne data directement
   const fetchStats = useCallback(async () => {
     setStatsLoading(true);
     try {
-      const data = await getPatientStats();
+      const data = await API.getPatientStats();
       setStats(data);
+      return data;
     } catch {
-      // silencieux — les stats ne bloquent pas l'UI
+      // silencieux
     } finally {
       setStatsLoading(false);
     }
   }, []);
 
-  // Chargement initial
-  useEffect(() => {
-    fetchPatients();
-  }, [filters]);
-
-  // ── Recherche (debounce intégré dans le composant appelant) ─────────
-  const search = useCallback((query) => {
-    setFilters((prev) => ({ ...prev, search: query, page: 1 }));
-  }, []);
-
-  const filterByStatut = useCallback((statut) => {
-    setFilters((prev) => ({ ...prev, statut: statut || undefined, page: 1 }));
-  }, []);
-
-  // ── CRUD ────────────────────────────────────────────────────────────
-
-  const createPatientFn = useCallback(async (payload) => {
-    const data = await createPatient(payload);
-    await fetchPatients();
-    return data;
-  }, [fetchPatients]);
-
-  const updatePatientFn = useCallback(async (id, payload) => {
-    const data = await updatePatient(id, payload);
-    setPatients((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, ...data } : p))
-    );
+  // ✅ CORRIGÉ : API.createPatient() retourne data directement
+  const createPatient = useCallback(async (payload) => {
+    const data = await API.createPatient(payload);
+    dispatch({ type: "ADD", payload: data });
     return data;
   }, []);
 
-  const deletePatientFn = useCallback(async (id) => {
-    await deletePatient(id);
-    setPatients((prev) => prev.filter((p) => p.id !== id));
-  }, []);
-
-  // ── Validation (dentiste) ────────────────────────────────────────────
-  const validerPatientFn = useCallback(async (id, decision, raison = "") => {
-    const data = await validerPatient(id, decision, raison);
-    // Mettre à jour le statut localement
-    setPatients((prev) =>
-      prev.map((p) =>
-        p.id === id ? { ...p, statut: decision } : p
-      )
-    );
+  // ✅ CORRIGÉ : API.updatePatient() retourne data directement
+  const updatePatient = useCallback(async (id, payload) => {
+    const data = await API.updatePatient(id, payload);
+    dispatch({ type: "UPDATE", payload: data });
     return data;
   }, []);
 
-  const archiverPatientFn = useCallback(async (id) => {
-    await archiverPatient(id);
-    setPatients((prev) => prev.filter((p) => p.id !== id));
+  const deletePatient = useCallback(async (id) => {
+    await API.deletePatient(id);
+    dispatch({ type: "REMOVE", payload: id });
   }, []);
 
-  const restaurerPatientFn = useCallback(async (id) => {
-    const data = await restaurerPatient(id);
-    await fetchPatients();
+  const archiverPatient = useCallback(async (id) => {
+    await API.archiverPatient(id);
+    dispatch({ type: "REMOVE", payload: id });
+  }, []);
+
+  const restaurerPatient = useCallback(async (id) => {
+    await API.restaurerPatient(id);
+    dispatch({ type: "REMOVE", payload: id });
+  }, []);
+
+  // ✅ CORRIGÉ : utilise la réponse backend (patient complet avec statut à jour)
+  const validerPatient = useCallback(async (id, decision, refuseRaison = "") => {
+    const data = await API.validerPatient(id, decision, refuseRaison);
+    // ✅ data = patient sérialisé complet retourné par le backend
+    // On met à jour avec les vraies données DB, pas juste "decision"
+    dispatch({
+      type: "SET_STATUT",
+      payload: {
+        id,
+        statut:        data.statut        ?? decision,
+        refuse_raison: data.refuse_raison ?? refuseRaison,
+      },
+    });
     return data;
-  }, [fetchPatients]);
+  }, []);
+
+  // ✅ CORRIGÉ : API.updateNote() retourne data directement
+  const saveNote = useCallback(async (id, noteGenerale) => {
+    const data = await API.updateNote(id, noteGenerale);
+    dispatch({ type: "UPDATE", payload: { id, note_generale: data.note_generale } });
+    return data;
+  }, []);
 
   return {
-    // Données
-    patients,
+    patients: state.patients,
+    loading:  state.loading,
+    error:    state.error,
     stats,
-    pagination,
-    loading,
     statsLoading,
-    error,
-    filters,
-    // Actions
     fetchPatients,
     fetchStats,
-    search,
-    filterByStatut,
-    setFilters,
-    createPatient:  createPatientFn,
-    updatePatient:  updatePatientFn,
-    deletePatient:  deletePatientFn,
-    validerPatient: validerPatientFn,
-    archiverPatient: archiverPatientFn,
-    restaurerPatient: restaurerPatientFn,
+    createPatient,
+    updatePatient,
+    deletePatient,
+    archiverPatient,
+    restaurerPatient,
+    validerPatient,
+    saveNote,
   };
 }

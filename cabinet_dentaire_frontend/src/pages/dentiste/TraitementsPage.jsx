@@ -498,3 +498,4 @@ const modalForm    = { padding: "1.5rem", display: "flex", flexDirection: "colum
 const closeBtnStyle= { background: "none", border: "none", cursor: "pointer", fontSize: "1.1rem", color: "#6b7280" };
 const inputSt      = { padding: "0.6rem 0.75rem", border: "1.5px solid #d1d5db", borderRadius: "8px", fontSize: "0.9rem", width: "100%", boxSizing: "border-box" };
 const errStyle     = { background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "0.6rem", color: "#dc2626", fontSize: "0.85rem" };
+

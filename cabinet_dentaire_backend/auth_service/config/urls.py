@@ -1,30 +1,32 @@
 """
-URL configuration for config project.
+config/urls.py — auth_service
+================================
+✅ FIX : suppression de la double définition JWT
+  AVANT : routes dupliquées /api/auth/ ET /auth/
+  APRÈS : une seule source → /api/auth/ via auth_app.urls
 
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/6.0/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
+Toutes les routes JWT passent par /api/auth/ :
+  POST /api/auth/login/           → obtenir access + refresh token
+  POST /api/auth/token/refresh/   → rafraîchir l'access token
+  POST /api/auth/token/verify/    → vérifier un token
+  POST /api/auth/logout/          → blacklister le refresh token
+  GET  /api/auth/me/              → profil utilisateur courant
+  GET  /api/auth/users/           → liste utilisateurs (admin)
+  GET  /api/auth/users/{id}/      → détail utilisateur
 """
+
 from django.contrib import admin
-from django.urls import path
-from django.urls import  include
+from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
-from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView as SpectacularSwaggerUIView
 
 urlpatterns = [
-    path("django-admin/", admin.site.urls),
+    path("admin/", admin.site.urls),
+
+    # ✅ Une seule source de vérité pour toutes les routes auth
+    # auth_app/urls.py définit login, refresh, verify, logout, me, users
     path("api/auth/", include("auth_app.urls")),
-    # API Docs
-    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
-    path("api/docs/", SpectacularSwaggerUIView.as_view(url_name="schema"), name="swagger-ui"),
-] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
